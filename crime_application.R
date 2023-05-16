@@ -80,7 +80,7 @@ summary(lmfit)
 ## extract MLEs
 # note: first entry corresponds to the intercept
 mle <- coef(lmfit)
-covmat <- diag(coef(summary(lmfit))[, "Std. Error"])
+covmat <- vcov(lmfit)
 
 ##### Fit approximate regularization model using Stan -----
 ABR_fun <- function(mle, covmat, prior = c("ridge", "lasso", "hs"), 
@@ -118,7 +118,7 @@ ABR_fun <- function(mle, covmat, prior = c("ridge", "lasso", "hs"),
 prior <- "ridge"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior)
 prior <- "lasso"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior)
+fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
 prior <- "hs"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # gives divergences
 
@@ -175,18 +175,18 @@ get.results <- function(fitobj, prior, algorithm, nms = names(mle)){
   return(res)
 }
 
-load("./results/fit_approx_ridge_crime.RData")
+load("./results/fitobjects/fit_approx_ridge_crime.RData")
 res.ridge1 <- get.results(fitobj = fit, prior = "ridge", algorithm = "approx")
-load("./results/fit_approx_lasso_crime.RData")
+load("./results/fitobjects/fit_approx_lasso_crime.RData")
 res.lasso1 <- get.results(fitobj = fit, prior = "lasso", algorithm = "approx")
 load("./results/fit_approx_hs_crime.RData")
 res.hs1 <- get.results(fitobj = fit, prior = "hs", algorithm = "approx")
 
-load("./results/fit_exact_ridge_crime.RData")
+load("./results/fitobjects/fit_exact_ridge_crime.RData")
 res.ridge2 <- get.results(fitobj = fit, prior = "ridge", algorithm = "exact")
-load("./results/fit_exact_lasso_crime.RData")
+load("./results/fitobjects/fit_exact_lasso_crime.RData")
 res.lasso2 <- get.results(fitobj = fit, prior = "lasso", algorithm = "exact")
-load("./results/fit_exact_hs_crime.RData")
+load("./results/fitobjects/fitobjects/fit_exact_hs_crime.RData")
 res.hs2 <- get.results(fitobj = fit, prior = "hs", algorithm = "exact")
 
 res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1,
@@ -220,12 +220,12 @@ brms.hs <- brm(ViolentCrimesPerPop ~ -1 + ., data = train, prior = prior(horsesh
 save(brms.hs, file = "./results/fit_brms_hs_crime.RData")
 
 ##### Combine all results in df -----
-load("./results/fit_shrinkem_ridge_crime.RData")
-load("./results/fit_shrinkem_lasso_crime.RData")
+load("./results/fitobjects/fit_shrinkem_ridge_crime.RData")
+load("./results/fitobjects/fit_shrinkem_lasso_crime.RData")
 
-load("./results/fit_brms_ridge_crime.RData")
-load("./results/fit_brms_lasso_crime.RData")
-load("./results/fit_brms_hs_crime.RData")
+load("./results/fitobjects/fit_brms_ridge_crime.RData")
+load("./results/fitobjects/fit_brms_lasso_crime.RData")
+load("./results/fitobjects/fit_brms_hs_crime.RData")
 
 ## exact and approximate Stan results
 head(res)
