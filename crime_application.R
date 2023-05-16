@@ -5,6 +5,7 @@ library(rstan)
 options(mc.cores = 4)
 rstan_options(auto_write = TRUE)
 library(shrinkem)
+library(brms)
 
 set.seed(07042023)
 
@@ -129,7 +130,7 @@ fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior)
 prior <- "lasso"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
 prior <- "lassoNS"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
+fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # does appear to converge
 prior <- "hs"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # gives divergences
 
@@ -190,17 +191,19 @@ load("./results/fitobjects/fit_approx_ridge_crime.RData")
 res.ridge1 <- get.results(fitobj = fit, prior = "ridge", algorithm = "approx")
 load("./results/fitobjects/fit_approx_lasso_crime.RData")
 res.lasso1 <- get.results(fitobj = fit, prior = "lasso", algorithm = "approx")
-load("./results/fit_approx_hs_crime.RData")
+load("./results/fitobjects/fit_approx_lassoNS_crime.RData")
+res.lassoNS <- get.results(fitobj = fit, prior = "lassoNS", algorithm = "approx")
+load("./results/fitobjects/fit_approx_hs_crime.RData")
 res.hs1 <- get.results(fitobj = fit, prior = "hs", algorithm = "approx")
 
 load("./results/fitobjects/fit_exact_ridge_crime.RData")
 res.ridge2 <- get.results(fitobj = fit, prior = "ridge", algorithm = "exact")
 load("./results/fitobjects/fit_exact_lasso_crime.RData")
 res.lasso2 <- get.results(fitobj = fit, prior = "lasso", algorithm = "exact")
-load("./results/fitobjects/fitobjects/fit_exact_hs_crime.RData")
+load("./results/fitobjects/fit_exact_hs_crime.RData")
 res.hs2 <- get.results(fitobj = fit, prior = "hs", algorithm = "exact")
 
-res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1,
+res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1, res.lassoNS,
                         res.ridge2, res.lasso2, res.hs2)
 
 # Select variables based on 95% CI 
@@ -328,7 +331,23 @@ ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
 dev.off()
 
 # lasso
-df.sel <- res[which(res$Prior == "lasso" & res$Variable %in% ord[1:21]), ]
+# change algorithm to distinguish between scaled and unscaled lasso
+for(i in 1:nrow(res)){
+  if(res$Prior[i] == "lassoNS"){
+    res$Algorithm[i] <- "approx_notScaled"
+  }
+}
+df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[1:4]), ]
+
+png(file = "./results/crime_est_lasso0.png", width = 1000, height = 1300)
+ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
+  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
+  geom_point(position = pd, size = 1.3) +
+  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) +
+  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
+dev.off()
+
+df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[5:21]), ]
 png(file = "./results/crime_est_lasso1.png", width = 1000, height = 1300)
 ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
