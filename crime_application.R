@@ -10,7 +10,7 @@ set.seed(07042023)
 
 ##### Data ------
 # Data can be downloaded from: https://archive.ics.uci.edu/ml/datasets/communities+and+crime+unnormalized
-dat <- read.table("./data/communities_crime_unnormalized.txt", sep=",", na.string="?")
+dat <- read.table("./communities_crime_unnormalized.txt", sep=",", na.string="?")
 
 head(dat)
 colnames(dat) <- c("communityname", "state", "countyCode", "communityCode", "fold", "population", "householdsize", "racepctblack",
@@ -103,6 +103,15 @@ ABR_fun <- function(mle, covmat, prior = c("ridge", "lasso", "hs"),
     mod <- stan_model("./models/approx_regression_lasso.stan")
   }
   
+  if(prior == "lassoNS"){
+    standat <- list(p = length(mle),
+                    mle = mle,
+                    errorcov = covmat,
+                    s0 = s0,
+                    nu0 = nu0)
+    mod <- stan_model("./models/approx_regression_lasso_notScaled.stan")
+  }
+  
   if(prior == "hs"){
     standat <- list(p = length(mle),
                     mle = mle,
@@ -118,6 +127,8 @@ ABR_fun <- function(mle, covmat, prior = c("ridge", "lasso", "hs"),
 prior <- "ridge"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior)
 prior <- "lasso"
+fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
+prior <- "lassoNS"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
 prior <- "hs"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # gives divergences
