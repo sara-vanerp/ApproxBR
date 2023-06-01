@@ -308,7 +308,7 @@ res.shrink <- rbind.data.frame(res.ridge, res.lasso)
 res <- rbind.data.frame(res, res.brms, res.shrink)
 save(res, file = "./results/full_results_df.RData")
 
-##### Plot results -----
+##### Plot all results -----
 load("./results/full_results_df.RData")
 
 pd <- position_dodge(0.8)
@@ -415,6 +415,57 @@ ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   geom_point(position = pd, size = 1.3) +
   ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
+dev.off()
+
+##### Final plots -----
+load("./results/full_results_df.RData")
+
+# Compare point estimates
+par(mfrow = c(1, 3))
+
+ridge <- res[which(res$Prior == "ridge"), ]
+Exact <- ridge[which(ridge$Algorithm == "exact"), "Estimate"]
+Approximate <- ridge[which(ridge$Algorithm == "approx"), "Estimate"]
+plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
+title("Ridge")
+abline(a = 0, b = 1, lty = 2)
+
+lasso <- res[which(res$Prior == "lassoNS"), ]
+Exact <- lasso[which(lasso$Algorithm == "exact"), "Estimate"]
+Approximate <- lasso[which(lasso$Algorithm == "approx"), "Estimate"]
+plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
+title("Lasso")
+abline(a = 0, b = 1, lty = 2)
+
+hs <- res[which(res$Prior == "hs"), ]
+Exact <- hs[which(hs$Algorithm == "exact"), "Estimate"]
+Approximate <- hs[which(hs$Algorithm == "approx"), "Estimate"]
+plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
+title("Horseshoe")
+abline(a = 0, b = 1, lty = 2)
+
+# Compare CIs and different priors for largest effects
+pd <- position_dodge(0.8)
+# reorder predictors based on estimates horseshoe
+sel <- res[which(res$Prior == "hs" & res$Algorithm == "exact"), ]
+ord <- sel[order(abs(sel$Estimate), decreasing = TRUE), "Variable"]
+res$Variable <- factor(res$Variable, levels = ord)
+
+# ridge
+df.sel <- res[which(res$Prior %in% c("ridge", "lassoNS", "hs") & res$Variable %in% ord[c(1:10, 111:121)] & res$Algorithm %in% c("exact", "approx")), ]
+df.sel$Prior <- factor(df.sel$Prior)
+levels(df.sel$Prior) <- list("Horseshoe" = "hs",
+                             "Lasso" = "lassoNS",
+                             "Ridge" = "ridge")
+df.sel$Method <- paste(df.sel$Prior, df.sel$Algorithm, sep =" ")
+png(file = "./results/crime_comparison_priors.png", width = 1000, height = 1300)
+ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Method, linetype = Method)) +
+  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
+  geom_point(position = pd, size = 1.3) +
+  scale_linetype_manual("", values = c(1, 2, 1, 2, 1, 2)) +
+  scale_colour_manual("", values = c("blue", "blue", "red", "red", "black", "black")) + 
+  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
+  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm"))
 dev.off()
 
 ##### PMSE -----
