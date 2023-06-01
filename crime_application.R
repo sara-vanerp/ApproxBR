@@ -135,7 +135,7 @@ prior <- "hs"
 fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # gives divergences
 
 ##### Compare with exact solution -----
-ex_fun <- function(train, prior = c("ridge", "lasso", "hs"), 
+ex_fun <- function(train, prior = c("ridge", "lasso", "lassoNS", "hs"), 
                     iter = 4000, s0 = 1, nu0 = 3){ 
   
   input.dat <- list(N_train = nrow(train),
@@ -158,6 +158,13 @@ ex_fun <- function(train, prior = c("ridge", "lasso", "hs"),
     mod <- stan_model("./models/exact_regression_lasso.stan")
   }
   
+  if(prior == "lassoNS"){
+    standat <- c(input.dat, 
+                 list(s0 = s0,
+                      nu0 = nu0))
+    mod <- stan_model("./models/exact_regression_lasso_notScaled.stan")
+  }
+  
   if(prior == "hs"){
     standat <- c(input.dat, 
                  list(s0 = s0))
@@ -171,6 +178,8 @@ ex_fun <- function(train, prior = c("ridge", "lasso", "hs"),
 prior <- "ridge"
 fit <- ex_fun(train = train, prior = prior)
 prior <- "lasso"
+fit <- ex_fun(train = train, prior = prior)
+prior <- "lassoNS"
 fit <- ex_fun(train = train, prior = prior)
 prior <- "hs"
 fit <- ex_fun(train = train, prior = prior) # gives divergences
@@ -200,11 +209,13 @@ load("./results/fitobjects/fit_exact_ridge_crime.RData")
 res.ridge2 <- get.results(fitobj = fit, prior = "ridge", algorithm = "exact")
 load("./results/fitobjects/fit_exact_lasso_crime.RData")
 res.lasso2 <- get.results(fitobj = fit, prior = "lasso", algorithm = "exact")
+load("./results/fitobjects/fit_exact_lassoNS_crime.RData")
+res.lassoNS2 <- get.results(fitobj = fit, prior = "lassoNS", algorithm = "exact")
 load("./results/fitobjects/fit_exact_hs_crime.RData")
 res.hs2 <- get.results(fitobj = fit, prior = "hs", algorithm = "exact")
 
 res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1, res.lassoNS,
-                        res.ridge2, res.lasso2, res.hs2)
+                        res.ridge2, res.lasso2, res.hs2, res.lassoNS2)
 
 # Select variables based on 95% CI 
 sel <- rep(NA, nrow(res))
@@ -221,7 +232,10 @@ shrink.ridge <- shrinkem(mle, Sigma = covmat, type = "ridge")
 save(shrink.ridge, file = "./results/fit_shrinkem_ridge_crime.RData")
 shrink.lasso <- shrinkem(mle, Sigma = covmat, type = "lasso")
 save(shrink.lasso, file = "./results/fit_shrinkem_lasso_crime.RData")
-shrink.hs <- shrinkem(mle, Sigma = covmat, type = "horseshoe") # doesn't run
+shrink.hs <- shrinkem(mle, Sigma = covmat, type = "horseshoe") 
+save(shrink.hs, file = "./results/fit_shrinkem_hs_crime.RData")
+shrink.alas <- shrinkem(mle, Sigma = covmat, type = "lasso", group = 1:length(mle)) # doesn't run
+save(shrink.alas, file = "./results/fit_shrinkem_alas_crime.RData")
 
 ##### Compare with brms -----
 # note: the ridge is different because the sd is not estimated based on data and the horseshoe in brms is a regularized horseshoe instead of a normal one
@@ -332,11 +346,12 @@ dev.off()
 
 # lasso
 # change algorithm to distinguish between scaled and unscaled lasso
-for(i in 1:nrow(res)){
-  if(res$Prior[i] == "lassoNS"){
-    res$Algorithm[i] <- "approx_notScaled"
-  }
-}
+sel1 <- which(res$Prior == "lassoNS" & res$Algorithm=="approx")
+res$Algorithm[sel1] <- "approx_notScaled"
+
+sel2 <- which(res$Prior == "lassoNS" & res$Algorithm=="exact")
+res$Algorithm[sel2] <- "exact_notScaled"
+
 df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[1:4]), ]
 
 png(file = "./results/crime_est_lasso0.png", width = 1000, height = 1300)
@@ -356,7 +371,7 @@ ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
 dev.off()
 
-df.sel <- res[which(res$Prior == "lasso" & res$Variable %in% ord[22:71]), ]
+df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[22:71]), ]
 png(file = "./results/crime_est_lasso2.png", width = 1000, height = 1300)
 ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
@@ -365,7 +380,7 @@ ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
 dev.off()
 
-df.sel <- res[which(res$Prior == "lasso" & res$Variable %in% ord[72:121]), ]
+df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[72:121]), ]
 png(file = "./results/crime_est_lasso3.png", width = 1000, height = 1300)
 ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
@@ -426,7 +441,7 @@ for(i in 1:length(levels(res$Method))){
 }
 
 colnames(out) <- c("Method", "PMSE")
-out
+print(out, digits = 2)
 
 ##### Variational Bayes in Stan -----
 # An interesting comparison would be with the vb algorithm in Stan
@@ -439,5 +454,23 @@ standat <-  list(N_train = nrow(train),
                nu0 = 3)
 mod <- stan_model("./models/exact_regression_lasso.stan")
 fit.vb <- vb(mod, data = standat)
-summary(fit.vb)$summary
+summ.vb <- summary(fit.vb)$summary
 
+est.vb <- summ.vb[grep("beta", rownames(summ.vb)), "mean"]
+est.ab <- res[which(res$Method == "lasso_approx"), "Estimate"]
+plot(est.vb, est.ab)
+
+# not scaled
+standat <-  list(N_train = nrow(train),
+                 p = ncol(train)-1,
+                 y_train = train$ViolentCrimesPerPop,
+                 X_train = train[, -c(grep("ViolentCrimesPerPop", colnames(train)))],
+                 s0 = 1,
+                 nu0 = 3)
+mod <- stan_model("./models/exact_regression_lasso_notScaled.stan")
+fit.vb <- vb(mod, data = standat)
+summ.vb <- summary(fit.vb)$summary
+
+est.vb <- summ.vb[grep("beta", rownames(summ.vb)), "mean"]
+est.ab <- res[which(res$Method == "lassoNS_approx_notScaled"), "Estimate"]
+plot(est.vb, est.ab)
