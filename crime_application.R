@@ -6,6 +6,7 @@ options(mc.cores = 4)
 rstan_options(auto_write = TRUE)
 library(shrinkem)
 library(brms)
+library(dplyr)
 
 set.seed(07042023)
 
@@ -493,6 +494,25 @@ for(i in 1:length(levels(res$Method))){
 
 colnames(out) <- c("Method", "PMSE")
 print(out, digits = 2)
+
+# add MSE regular lm
+sel <- data.frame("Estimate" = lmfit$coefficients,
+                  "Variable" = names(lmfit$coefficients))
+comb <- merge(sel, testX, by = "Variable")
+test.obs <- comb[, -c(grep("Variable|Estimate", colnames(comb)))]
+est <- comb$Estimate
+predY <- apply(test.obs, 2, function(x) sum(est*x))
+pmse <- mean((testY - predY)^2)
+print(pmse, digits = 2)
+
+##### Number of selected variables -----
+head(res)
+df.sel <- res[which(res$Prior %in% c("ridge", "lassoNS", "hs") & res$Algorithm %in% c("exact", "approx")), ]
+df.sel$Method <- paste(df.sel$Prior, df.sel$Algorithm, sep = "_")
+
+df.sel %>% 
+  group_by(Method) %>% 
+  summarize(sum = sum(Included))
 
 ##### Variational Bayes in Stan -----
 # An interesting comparison would be with the vb algorithm in Stan
