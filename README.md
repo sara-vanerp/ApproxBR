@@ -1,2 +1,2 @@
 # ApproxBR
-Repository for an application of Approximate Bayesian regularization
+Repository for various applications of Approximate Bayesian regularization
