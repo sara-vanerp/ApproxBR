@@ -3,6 +3,4 @@
 .RData
 .Ruserdata
 .DS_Store
-./results/fitobjects
-results/fitobjects
-communities_crime_unnormalized.txt
+data
