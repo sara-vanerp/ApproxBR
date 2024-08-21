@@ -7,12 +7,14 @@ rstan_options(auto_write = TRUE)
 library(shrinkem)
 library(brms)
 library(dplyr)
+library(ggplot2)
+library(MCMCglmm)
 
 set.seed(07042023)
 
-##### Data ------
+##### Data preparation ------
 # Data can be downloaded from: https://archive.ics.uci.edu/ml/datasets/communities+and+crime+unnormalized
-dat <- read.table("./communities_crime_unnormalized.txt", sep=",", na.string="?")
+dat <- read.table("data/communities_crime_unnormalized.txt", sep=",", na.string="?")
 
 head(dat)
 colnames(dat) <- c("communityname", "state", "countyCode", "communityCode", "fold", "population", "householdsize", "racepctblack",
@@ -38,18 +40,18 @@ colnames(dat) <- c("communityname", "state", "countyCode", "communityCode", "fol
                    "nonViolPerPop")
 
 
-# 1 predictor is treated as integer, but is really nominal 
-class(dat$LemasGangUnitDeploy)
-dat$LemasGangUnitDeploy <- factor(dat$LemasGangUnitDeploy, levels=c(0, 5, 10), labels=c("no", "parttime", "yes"))
 
-# remove non-predictive attributes and state 
-# state is included in the original application, but excluded here to avoid having p > n
-dat.sel <- subset(dat, select=-c(state, communityname, countyCode, communityCode, fold))
+# remove non-predictive attributes and possible prediction goals;
+# keep only the total number of violent crimes to predict (others are subtotals) 
+dat.sel <- subset(dat, select = -c(communityname, countyCode, communityCode, fold,
+                                 murders, murdPerPop, rapes, rapesPerPop, robberies,
+                                 robbPerPop, assaults, assaultPerPop, burglaries,
+                                 burglPerPop, larcenies, larcPerPop, autoTheft,
+                                 autoTheftPerPop, arsons, arsonsPerPop, nonViolPerPop))
 
-# remove possible prediction goals, keep only the total number of violent crimes to predict (others are subtotals) 
-df <- subset(dat.sel, select=-c(murders, murdPerPop, rapes, rapesPerPop, robberies, robbPerPop, assaults, assaultPerPop, burglaries,
-                                burglPerPop, larcenies, larcPerPop, autoTheft, autoTheftPerPop, arsons, arsonsPerPop, nonViolPerPop))
-
+# for simplicity, keep only the continuous predictors
+# OwnOccQrange and RentQrange are removed too since these are functions of other predictors leading to singularities in the MLEs
+df <- subset(dat.sel, select = -c(state, LemasGangUnitDeploy, OwnOccQrange, RentQrange))
 summary(df)
 
 # plot outcome measure 
@@ -60,132 +62,114 @@ hist(log(df$ViolentCrimesPerPop)) # more normal
 df$ViolentCrimesPerPop <- log(df$ViolentCrimesPerPop)
 
 # create design matrix
-mod.mat <- model.matrix(~., df) # removes all NAs
-
-# for simplicity: keep only the continuous predictors. 
-# The original application included dummies for nominal predictors as well, but since these cannot be standardized, their coefficients might be influenced differently by the shrinkage priors
-# This issue needs additional checking
-# OwnOccQrange and RentQrange were removed too since these are functions of other predictors leading to singularities in the MLEs
-cont.mat <- mod.mat[, -c(grep("(Intercept)|LemasGangUnitDeployparttime|LemasGangUnitDeployyes|OwnOccQrange|RentQrange", colnames(mod.mat)))]
+mod.mat <- model.matrix(~., df)[, -1] # removes all NAs
 
 # 90% training and 10% test set and standardize both
-ntrain <- as.integer(0.9*nrow(cont.mat))
-ntest <- nrow(cont.mat)-ntrain
+ntrain <- as.integer(0.9*nrow(mod.mat))
+ntest <- nrow(mod.mat)-ntrain
 
-train <- data.frame(scale(cont.mat[1:ntrain, ]))
-test <- data.frame(scale(cont.mat[(ntrain+1):nrow(cont.mat), ]))
+train <- data.frame(scale(mod.mat[1:ntrain, ]))
+test <- data.frame(scale(mod.mat[(ntrain+1):nrow(mod.mat), ]))
 
-##### Get maximum likelihood estimates -----
+##### Analyses ------
+
+# Option 1: Exact with Stan
+input.dat <- list(N_train = nrow(train),
+                  p = ncol(train)-1,
+                  y_train = train$ViolentCrimesPerPop,
+                  X_train = train[, -c(grep("ViolentCrimesPerPop", colnames(train)))])
+
+# prior hyperparameters
+s0 = 1
+nu0 = 3
+
+# ridge exact
+standat <- c(input.dat, 
+             list(s0 = s0,
+                  nu0 = nu0))
+mod <- stan_model("./models/exact_regression_ridge.stan")
+fit <- sampling(mod, data = standat)
+save(fit, file = paste0("./results/fitobjects/fit_exact_ridge_crime.RData"))
+
+# lasso exact
+standat <- c(input.dat, 
+             list(s0 = s0,
+                  nu0 = nu0))
+mod <- stan_model("./models/exact_regression_lasso.stan")
+fit <- sampling(mod, data = standat)
+save(fit, file = paste0("./results/fitobjects/fit_exact_lasso_crime.RData"))
+  
+# horseshoe exact  
+standat <- c(input.dat, 
+             list(s0 = s0))
+mod <- stan_model("./models/exact_regression_hs.stan")
+fit <- sampling(mod, data = standat, iter = 8000) # results in divergences
+save(fit, file = paste0("./results/fitobjects/fit_exact_hs_crime.RData"))
+
+# Option 2: Approximate implementation in shrinkem
+
+# get maximum likelihood estimates
 lmfit <- lm(train$ViolentCrimesPerPop ~ -1 + ., train)
 summary(lmfit)
 
-## extract MLEs
-# note: first entry corresponds to the intercept
+# extract MLEs
 mle <- coef(lmfit)
 covmat <- vcov(lmfit)
 
-##### Fit approximate regularization model using Stan -----
-ABR_fun <- function(mle, covmat, prior = c("ridge", "lasso", "hs"), 
-                    iter = 4000, s0 = 1, nu0 = 3){ 
-  if(prior  == "ridge"){
-    standat <- list(p = length(mle),
-                    mle = mle,
-                    errorcov = covmat,
-                    s0 = s0,
-                    nu0 = nu0)
-    mod <- stan_model("./models/approx_regression_ridge.stan")
-  }
-  
-  if(prior == "lasso"){
-    standat <- list(p = length(mle),
-                    mle = mle,
-                    errorcov = covmat,
-                    s0 = s0,
-                    nu0 = nu0)
-    mod <- stan_model("./models/approx_regression_lasso.stan")
-  }
-  
-  if(prior == "lassoNS"){
-    standat <- list(p = length(mle),
-                    mle = mle,
-                    errorcov = covmat,
-                    s0 = s0,
-                    nu0 = nu0)
-    mod <- stan_model("./models/approx_regression_lasso_notScaled.stan")
-  }
-  
-  if(prior == "hs"){
-    standat <- list(p = length(mle),
-                    mle = mle,
-                    errorcov = covmat,
-                    s0 = s0)
-    mod <- stan_model("./models/approx_regression_hs.stan")
-  }
-  
-  fit <- sampling(mod, data = standat, iter = iter)
-  save(fit, file = paste0("./results/fit_approx_", prior, "_crime.RData"))
-}
+# ridge approximation shrinkem
+shrink.ridge <- shrinkem(mle, Sigma = covmat, type = "ridge")
+save(shrink.ridge, file = "./results/fitobjects/fit_shrinkem_ridge_crime.RData")
 
-prior <- "ridge"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior)
-prior <- "lasso"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # large Rhat
-prior <- "lassoNS"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # does appear to converge
-prior <- "hs"
-fit <- ABR_fun(mle = mle, covmat = covmat, prior = prior) # gives divergences
+# lasso approximation shrinkem
+shrink.lasso <- shrinkem(mle, Sigma = covmat, type = "lasso")
+save(shrink.lasso, file = "./results/fitobjects/fit_shrinkem_lasso_crime.RData")
 
-##### Compare with exact solution -----
-ex_fun <- function(train, prior = c("ridge", "lasso", "lassoNS", "hs"), 
-                    iter = 4000, s0 = 1, nu0 = 3){ 
-  
-  input.dat <- list(N_train = nrow(train),
-                    p = ncol(train)-1,
-                    y_train = train$ViolentCrimesPerPop,
-                    X_train = train[, -c(grep("ViolentCrimesPerPop", colnames(train)))]
-  )
-  
-  if(prior  == "ridge"){
-    standat <- c(input.dat, 
-                 list(s0 = s0,
-                    nu0 = nu0))
-    mod <- stan_model("./models/exact_regression_ridge.stan")
-  }
-  
-  if(prior == "lasso"){
-    standat <- c(input.dat, 
-                 list(s0 = s0,
-                      nu0 = nu0))
-    mod <- stan_model("./models/exact_regression_lasso.stan")
-  }
-  
-  if(prior == "lassoNS"){
-    standat <- c(input.dat, 
-                 list(s0 = s0,
-                      nu0 = nu0))
-    mod <- stan_model("./models/exact_regression_lasso_notScaled.stan")
-  }
-  
-  if(prior == "hs"){
-    standat <- c(input.dat, 
-                 list(s0 = s0))
-    mod <- stan_model("./models/exact_regression_hs.stan")
-  }
-  
-  fit <- sampling(mod, data = standat, iter = iter)
-  save(fit, file = paste0("./results/fit_exact_", prior, "_crime.RData"))
-}
+# horseshoe approximation shrinkem
+shrink.hs <- shrinkem(mle, Sigma = covmat, type = "horseshoe") 
+save(shrink.hs, file = "./results/fitobjects/fit_shrinkem_hs_crime.RData")
 
-prior <- "ridge"
-fit <- ex_fun(train = train, prior = prior)
-prior <- "lasso"
-fit <- ex_fun(train = train, prior = prior)
-prior <- "lassoNS"
-fit <- ex_fun(train = train, prior = prior)
-prior <- "hs"
-fit <- ex_fun(train = train, prior = prior) # gives divergences
+# Option 3: Approximate implementation in Stan
+# note: this option is not included in the manuscript but only an illustration
+# of how to implement the approximate model in Stan (models can be adapted easily for different priors)
 
-##### Combine results -----
+# prior hyperparameters: same as for the exact implementation
+s0 = 1
+nu0 = 3
+
+# ridge approximation Stan
+standat <- list(p = length(mle),
+                mle = mle,
+                errorcov = covmat,
+                s0 = s0,
+                nu0 = nu0)
+
+mod <- stan_model("./models/approx_regression_ridge.stan")
+fit <- sampling(mod, data = standat)
+save(fit, file = paste0("./results/fitobjects/fit_approxStan_ridge_crime.RData"))
+
+# lasso approximation Stan 
+standat <- list(p = length(mle),
+                mle = mle,
+                errorcov = covmat,
+                s0 = s0,
+                nu0 = nu0)
+
+mod <- stan_model("./models/approx_regression_lasso.stan")
+fit <- sampling(mod, data = standat)
+save(fit, file = paste0("./results/fitobjects/fit_approxStan_lasso_crime.RData"))
+
+# horseshoe approximation Stan 
+standat <- list(p = length(mle),
+                mle = mle,
+                errorcov = covmat,
+                s0 = s0)
+
+mod <- stan_model("./models/approx_regression_hs.stan")
+fit <- sampling(mod, data = standat, iter = 8000) # note the divergences and convergence warnings here
+save(fit, file = paste0("./results/fitobjects/fit_approxStan_hs_crime.RData"))
+
+##### Results: Estimation ------
+# add posterior modes and combine results approximate and exact Stan implementations
 get.results <- function(fitobj, prior, algorithm, nms = names(mle)){
   summ <- summary(fitobj, prob = c(0.025, 0.975))$summary
   if(algorithm == "approx"){
@@ -193,32 +177,39 @@ get.results <- function(fitobj, prior, algorithm, nms = names(mle)){
   } else if(algorithm == "exact"){
     outsel <- summ[grep("beta\\[", rownames(summ)), c("mean", "2.5%", "97.5%")]
   }
+  
+  # add posterior modes
+  fit.mcmc <- as.matrix(fitobj)
+  modes <- posterior.mode(fit.mcmc)
+  if(algorithm == "approx"){
+    modes.sel <- modes[grep("theta\\[", names(modes))]
+  } else if(algorithm == "exact"){
+    modes.sel <- modes[grep("beta\\[", names(modes))]
+  }
+  outsel <- cbind(outsel, "mode" = modes.sel)
+  
   res <- cbind.data.frame(nms, prior, algorithm, outsel)
   return(res)
 }
 
-load("./results/fitobjects/fit_approx_ridge_crime.RData")
+load("./results/fitobjects/fit_approxStan_ridge_crime.RData")
 res.ridge1 <- get.results(fitobj = fit, prior = "ridge", algorithm = "approx")
-load("./results/fitobjects/fit_approx_lasso_crime.RData")
+load("./results/fitobjects/fit_approxStan_lasso_crime.RData")
 res.lasso1 <- get.results(fitobj = fit, prior = "lasso", algorithm = "approx")
-load("./results/fitobjects/fit_approx_lassoNS_crime.RData")
-res.lassoNS <- get.results(fitobj = fit, prior = "lassoNS", algorithm = "approx")
-load("./results/fitobjects/fit_approx_hs_crime.RData")
+load("./results/fitobjects/fit_approxStan_hs_crime.RData")
 res.hs1 <- get.results(fitobj = fit, prior = "hs", algorithm = "approx")
 
 load("./results/fitobjects/fit_exact_ridge_crime.RData")
 res.ridge2 <- get.results(fitobj = fit, prior = "ridge", algorithm = "exact")
 load("./results/fitobjects/fit_exact_lasso_crime.RData")
 res.lasso2 <- get.results(fitobj = fit, prior = "lasso", algorithm = "exact")
-load("./results/fitobjects/fit_exact_lassoNS_crime.RData")
-res.lassoNS2 <- get.results(fitobj = fit, prior = "lassoNS", algorithm = "exact")
 load("./results/fitobjects/fit_exact_hs_crime.RData")
 res.hs2 <- get.results(fitobj = fit, prior = "hs", algorithm = "exact")
 
-res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1, res.lassoNS,
-                        res.ridge2, res.lasso2, res.hs2, res.lassoNS2)
+res <- rbind.data.frame(res.ridge1, res.lasso1, res.hs1,
+                        res.ridge2, res.lasso2, res.hs2)
 
-# Select variables based on 95% CI 
+# select variables based on 95% CI 
 sel <- rep(NA, nrow(res))
 for(i in 1:nrow(res)){
   sel[i] <- ifelse(res$`2.5%`[i] <= 0 & res$`97.5%`[i] >=0, FALSE, TRUE)
@@ -226,250 +217,70 @@ for(i in 1:nrow(res)){
 
 res$select <- sel
 
-sum(res$select)
+head(res)
+colnames(res) <- c("Variable", "Prior", "Algorithm", "Mean", "LB", "UB", "Mode", "Included")
 
-##### Compare with shrinkem package -----
-shrink.ridge <- shrinkem(mle, Sigma = covmat, type = "ridge")
-save(shrink.ridge, file = "./results/fit_shrinkem_ridge_crime.RData")
-shrink.lasso <- shrinkem(mle, Sigma = covmat, type = "lasso")
-save(shrink.lasso, file = "./results/fit_shrinkem_lasso_crime.RData")
-shrink.hs <- shrinkem(mle, Sigma = covmat, type = "horseshoe") 
-save(shrink.hs, file = "./results/fit_shrinkem_hs_crime.RData")
-shrink.alas <- shrinkem(mle, Sigma = covmat, type = "lasso", group = 1:length(mle)) # doesn't run
-save(shrink.alas, file = "./results/fit_shrinkem_alas_crime.RData")
-
-##### Compare with brms -----
-# note: the ridge is different because the sd is not estimated based on data and the horseshoe in brms is a regularized horseshoe instead of a normal one
-# fixed the sd_ridge to estimated value from exact implementation
-brms.ridge <-  brm(ViolentCrimesPerPop ~ -1 + ., data = train, prior = prior(normal(0, 0.05), class = "b"))
-save(brms.ridge, file = "./results/fit_brms_ridge_crime.RData")
-brms.lasso <- brm(ViolentCrimesPerPop ~ -1 + ., data = train, prior = prior(lasso(), class = "b"))
-save(brms.lasso, file = "./results/fit_brms_lasso_crime.RData")
-brms.hs <- brm(ViolentCrimesPerPop ~ -1 + ., data = train, prior = prior(horseshoe(1), class = "b")) # less divergences than actual horseshoe
-save(brms.hs, file = "./results/fit_brms_hs_crime.RData")
-
-##### Combine all results in df -----
+# add results shrinkem
 load("./results/fitobjects/fit_shrinkem_ridge_crime.RData")
 load("./results/fitobjects/fit_shrinkem_lasso_crime.RData")
-
-load("./results/fitobjects/fit_brms_ridge_crime.RData")
-load("./results/fitobjects/fit_brms_lasso_crime.RData")
-load("./results/fitobjects/fit_brms_hs_crime.RData")
-
-## exact and approximate Stan results
-head(res)
-colnames(res) <- c("Variable", "Prior", "Algorithm", "Estimate", "LB", "UB", "Included")
-
-## brms
-res.ridge <- data.frame(fixef(brms.ridge)[, -2])
-colnames(res.ridge) <- c("Estimate", "LB", "UB")
-res.ridge$Variable <- rownames(res.ridge)
-res.ridge$Prior <- "ridge"
-res.ridge$Algorithm <- "brms"
-
-res.lasso <- data.frame(fixef(brms.lasso)[, -2])
-colnames(res.lasso) <- c("Estimate", "LB", "UB")
-res.lasso$Variable <- rownames(res.lasso)
-res.lasso$Prior <- "lasso"
-res.lasso$Algorithm <- "brms"
-
-res.hs <- data.frame(fixef(brms.hs)[, -2])
-colnames(res.hs) <- c("Estimate", "LB", "UB")
-res.hs$Variable <- rownames(res.hs)
-res.hs$Prior <- "hs"
-res.hs$Algorithm <- "brms"
-
-res.brms <- rbind.data.frame(res.ridge, res.lasso, res.hs)
-
-# Select variables based on 95% CI 
-sel <- rep(NA, nrow(res.brms))
-for(i in 1:nrow(res.brms)){
-  sel[i] <- ifelse(res.brms$LB[i] <= 0 & res.brms$UB[i] >=0, FALSE, TRUE)
-}
-
-res.brms$Included <- sel
+load("./results/fitobjects/fit_shrinkem_hs_crime.RData")
 
 ## shrinkem
 res.ridge <- summary(shrink.ridge)
-res.ridge <- res.ridge[, c(grep("shrunk.mean|shrunk.lower|shrunk.upper|nonzero", colnames(res.ridge)))]
-colnames(res.ridge) <- c("Estimate", "LB", "UB", "Included")
+res.ridge <- res.ridge[, c(grep("shrunk.mean|shrunk.mode|shrunk.lower|shrunk.upper|nonzero", colnames(res.ridge)))]
+colnames(res.ridge) <- c("Mean", "Mode", "LB", "UB", "Included")
 res.ridge$Variable <- rownames(res.ridge)
 res.ridge$Prior <- "ridge"
 res.ridge$Algorithm <- "shrinkem"
 
 res.lasso <- summary(shrink.lasso)
-res.lasso <- res.lasso[, c(grep("shrunk.mean|shrunk.lower|shrunk.upper|nonzero", colnames(res.lasso)))]
-colnames(res.lasso) <- c("Estimate", "LB", "UB", "Included")
+res.lasso <- res.lasso[, c(grep("shrunk.mean|shrunk.mode|shrunk.lower|shrunk.upper|nonzero", colnames(res.lasso)))]
+colnames(res.lasso) <- c("Mean", "Mode", "LB", "UB", "Included")
 res.lasso$Variable <- rownames(res.lasso)
 res.lasso$Prior <- "lasso"
 res.lasso$Algorithm <- "shrinkem"
 
-res.shrink <- rbind.data.frame(res.ridge, res.lasso)
+res.hs <- summary(shrink.hs)
+res.hs <- res.hs[, c(grep("shrunk.mean|shrunk.mode|shrunk.lower|shrunk.upper|nonzero", colnames(res.hs)))]
+colnames(res.hs) <- c("Mean", "Mode", "LB", "UB", "Included")
+res.hs$Variable <- rownames(res.hs)
+res.hs$Prior <- "hs"
+res.hs$Algorithm <- "shrinkem"
 
-res <- rbind.data.frame(res, res.brms, res.shrink)
+res.shrink <- rbind.data.frame(res.ridge, res.lasso, res.hs)
+
+res <- rbind.data.frame(res, res.shrink)
 save(res, file = "./results/full_results_df.RData")
 
-##### Plot all results -----
+# Visualize estimates
 load("./results/full_results_df.RData")
-
-pd <- position_dodge(0.8)
-# reorder predictors based on mle value
-ord <- names(sort(abs(mle), decreasing = TRUE))
-res$Variable <- factor(res$Variable, levels = ord)
-
-# ridge
-df.sel <- res[which(res$Prior == "ridge" & res$Variable %in% ord[1:21]), ]
-png(file = "./results/crime_est_ridge1.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior == "ridge" & res$Variable %in% ord[22:71]), ]
-png(file = "./results/crime_est_ridge2.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior == "ridge" & res$Variable %in% ord[72:121]), ]
-png(file = "./results/crime_est_ridge3.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-# lasso
-# change algorithm to distinguish between scaled and unscaled lasso
-sel1 <- which(res$Prior == "lassoNS" & res$Algorithm=="approx")
-res$Algorithm[sel1] <- "approx_notScaled"
-
-sel2 <- which(res$Prior == "lassoNS" & res$Algorithm=="exact")
-res$Algorithm[sel2] <- "exact_notScaled"
-
-df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[1:4]), ]
-
-png(file = "./results/crime_est_lasso0.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) +
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[5:21]), ]
-png(file = "./results/crime_est_lasso1.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) +
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[22:71]), ]
-png(file = "./results/crime_est_lasso2.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) +
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior %in% c("lasso", "lassoNS") & res$Variable %in% ord[72:121]), ]
-png(file = "./results/crime_est_lasso3.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-# horseshoe
-df.sel <- res[which(res$Prior == "hs" & res$Variable %in% ord[1:21]), ]
-png(file = "./results/crime_est_hs1.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior == "hs" & res$Variable %in% ord[22:71]), ]
-png(file = "./results/crime_est_hs2.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-df.sel <- res[which(res$Prior == "hs" & res$Variable %in% ord[72:121]), ]
-png(file = "./results/crime_est_hs3.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Algorithm)) +
-  geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
-  theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom")
-dev.off()
-
-##### Final plots -----
-load("./results/full_results_df.RData")
-
-# Compare point estimates
-par(mfrow = c(1, 3))
-
-ridge <- res[which(res$Prior == "ridge"), ]
-Exact <- ridge[which(ridge$Algorithm == "exact"), "Estimate"]
-Approximate <- ridge[which(ridge$Algorithm == "approx"), "Estimate"]
-plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
-title("Ridge")
-abline(a = 0, b = 1, lty = 2)
-
-lasso <- res[which(res$Prior == "lassoNS"), ]
-Exact <- lasso[which(lasso$Algorithm == "exact"), "Estimate"]
-Approximate <- lasso[which(lasso$Algorithm == "approx"), "Estimate"]
-plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
-title("Lasso")
-abline(a = 0, b = 1, lty = 2)
-
-hs <- res[which(res$Prior == "hs"), ]
-Exact <- hs[which(hs$Algorithm == "exact"), "Estimate"]
-Approximate <- hs[which(hs$Algorithm == "approx"), "Estimate"]
-plot(Exact, Approximate, xlim = c(-1, 1), ylim = c(-1, 1))
-title("Horseshoe")
-abline(a = 0, b = 1, lty = 2)
 
 # Compare CIs and different priors for largest effects
 pd <- position_dodge(0.8)
 # reorder predictors based on estimates horseshoe
 sel <- res[which(res$Prior == "hs" & res$Algorithm == "exact"), ]
-ord <- sel[order(abs(sel$Estimate), decreasing = TRUE), "Variable"]
+ord <- sel[order(abs(sel$Mean), decreasing = TRUE), "Variable"]
 res$Variable <- factor(res$Variable, levels = ord)
 
 # ridge
-df.sel <- res[which(res$Prior %in% c("ridge", "lassoNS", "hs") & res$Variable %in% ord[c(1:10, 111:121)] & res$Algorithm %in% c("exact", "approx")), ]
+df.sel <- res[which(res$Prior %in% c("ridge", "lasso", "hs") & res$Variable %in% ord[c(1:10, 111:121)] & res$Algorithm %in% c("exact", "shrinkem")), ]
 df.sel$Prior <- factor(df.sel$Prior)
 levels(df.sel$Prior) <- list("Horseshoe" = "hs",
-                             "Lasso" = "lassoNS",
+                             "Lasso" = "lasso",
                              "Ridge" = "ridge")
 df.sel$Method <- paste(df.sel$Prior, df.sel$Algorithm, sep =" ")
 png(file = "./results/crime_comparison_priors.png", width = 1000, height = 1300)
-ggplot(df.sel, aes(x = Estimate, y = Variable, colour = Method, linetype = Method)) +
+ggplot(df.sel, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
-  geom_point(position = pd, size = 1.3) +
+  geom_point(position = pd, size = 3) +
+  geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
   scale_linetype_manual("", values = c(1, 2, 1, 2, 1, 2)) +
   scale_colour_manual("", values = c("blue", "blue", "red", "red", "black", "black")) + 
   ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm"))
 dev.off()
 
-##### PMSE -----
+##### Results: PMSE ------
 ## PMSE is computed based on unselected estimates
 ## 95% interval is not ideal to select predictors, so I expect this to worsen the PMSE
 
@@ -480,11 +291,11 @@ testY <- test$ViolentCrimesPerPop
 res$Method <- factor(paste(res$Prior, res$Algorithm, sep = "_"))
 out <- data.frame(NA)
 for(i in 1:length(levels(res$Method))){
-  sel <- res[which(res$Method == levels(res$Method)[i]), c("Variable", "Estimate")]
+  sel <- res[which(res$Method == levels(res$Method)[i]), c("Variable", "Mean")]
   comb <- merge(sel, testX, by = "Variable")
   
-  test.obs <- comb[, -c(grep("Variable|Estimate", colnames(comb)))]
-  est <- comb$Estimate
+  test.obs <- comb[, -c(grep("Variable|Mean", colnames(comb)))]
+  est <- comb$Mean
   predY <- apply(test.obs, 2, function(x) sum(est*x))
   pmse <- mean((testY - predY)^2)
   
@@ -505,43 +316,13 @@ predY <- apply(test.obs, 2, function(x) sum(est*x))
 pmse <- mean((testY - predY)^2)
 print(pmse, digits = 2)
 
-##### Number of selected variables -----
+##### Results: Number of selected variables -----
 head(res)
-df.sel <- res[which(res$Prior %in% c("ridge", "lassoNS", "hs") & res$Algorithm %in% c("exact", "approx")), ]
+df.sel <- res[which(res$Prior %in% c("ridge", "lasso", "hs") & res$Algorithm %in% c("exact", "shrinkem")), ]
 df.sel$Method <- paste(df.sel$Prior, df.sel$Algorithm, sep = "_")
 
 df.sel %>% 
   group_by(Method) %>% 
   summarize(sum = sum(Included))
 
-##### Variational Bayes in Stan -----
-# An interesting comparison would be with the vb algorithm in Stan
-# This also provides an approximate (and fast) method, but based on the exact model implementation
-standat <-  list(N_train = nrow(train),
-               p = ncol(train)-1,
-               y_train = train$ViolentCrimesPerPop,
-               X_train = train[, -c(grep("ViolentCrimesPerPop", colnames(train)))],
-               s0 = 1,
-               nu0 = 3)
-mod <- stan_model("./models/exact_regression_lasso.stan")
-fit.vb <- vb(mod, data = standat)
-summ.vb <- summary(fit.vb)$summary
 
-est.vb <- summ.vb[grep("beta", rownames(summ.vb)), "mean"]
-est.ab <- res[which(res$Method == "lasso_approx"), "Estimate"]
-plot(est.vb, est.ab)
-
-# not scaled
-standat <-  list(N_train = nrow(train),
-                 p = ncol(train)-1,
-                 y_train = train$ViolentCrimesPerPop,
-                 X_train = train[, -c(grep("ViolentCrimesPerPop", colnames(train)))],
-                 s0 = 1,
-                 nu0 = 3)
-mod <- stan_model("./models/exact_regression_lasso_notScaled.stan")
-fit.vb <- vb(mod, data = standat)
-summ.vb <- summary(fit.vb)$summary
-
-est.vb <- summ.vb[grep("beta", rownames(summ.vb)), "mean"]
-est.ab <- res[which(res$Method == "lassoNS_approx_notScaled"), "Estimate"]
-plot(est.vb, est.ab)
