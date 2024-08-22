@@ -280,9 +280,13 @@ ggplot(df.sel, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) 
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm"))
 dev.off()
 
+# check where difference in posterior mean and mode for the exact horseshoe comes from
+load("./results/fitobjects/fit_exact_hs_crime.RData")
+mcmc_areas(as.matrix(fit), pars = "beta[45]")
+
 ##### Results: PMSE ------
-## PMSE is computed based on unselected estimates
-## 95% interval is not ideal to select predictors, so I expect this to worsen the PMSE
+# PMSE is computed based on unselected estimates
+# 95% interval is not ideal to select predictors, so I expect this to worsen the PMSE
 
 testX <- as.data.frame(t(test[, -grep("ViolentCrimesPerPop", colnames(test))]))
 testX$Variable <- rownames(testX)
