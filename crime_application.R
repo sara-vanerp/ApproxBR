@@ -250,10 +250,10 @@ res.hs$Algorithm <- "shrinkem"
 res.shrink <- rbind.data.frame(res.ridge, res.lasso, res.hs)
 
 res <- rbind.data.frame(res, res.shrink)
-save(res, file = "./results/full_results_df.RData")
+save(res, file = "./results/full_results_crime.RData")
 
 # Visualize estimates
-load("./results/full_results_df.RData")
+load("./results/full_results_crime.RData")
 
 # Compare CIs and different priors for largest effects
 pd <- position_dodge(0.8)
