@@ -276,7 +276,7 @@ ggplot(df.sel, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) 
   geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
   scale_linetype_manual("", values = c(1, 2, 1, 2, 1, 2)) +
   scale_colour_manual("", values = c("blue", "blue", "red", "red", "black", "black")) + 
-  ylab("Variable") + xlab("Posterior mean and 95% CI") + theme_bw(base_size = 25) + 
+  ylab("Variable") + xlab("Posterior estimates and 95% CI") + theme_bw(base_size = 25) + 
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm"))
 dev.off()
 
