@@ -203,15 +203,20 @@ levels(sel$Method) <- list("Elastic net regsem" = "enet regsem",
                            "Ridge regsem" = "ridge regsem",
                            "Ridge shrinkem" = "ridge shrinkem")
 
+# decided to remove the elastic net from the results because it pulls all effects to zero
+sel2 <- sel %>%
+  filter(Method != "Elastic net regsem") %>%
+  droplevels()
+
 pd <- position_dodge(0.8)
 
 png(file = "./results/MI_comparison_priors.png", width = 1000, height = 1300)
-ggplot(sel, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
+ggplot(sel2, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
   geom_point(position = pd, size = 3) +
   geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
-  scale_linetype_manual("", values = c(3, 1, 2, 3, 1)) +
-  scale_colour_manual("", values = c("black", "black", "blue", "blue", "blue")) + 
+  scale_linetype_manual("", values = c(1, 2, 3, 1)) +
+  scale_colour_manual("", values = c("black", "blue", "blue", "blue")) + 
   ylab("Variable") + xlab("Posterior estimates and 95% CI") + theme_bw(base_size = 25) + 
   guides(colour = guide_legend(nrow = 2), linetype = guide_legend(nrow = 2)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm")) 
