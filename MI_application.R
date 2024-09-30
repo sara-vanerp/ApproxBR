@@ -228,15 +228,20 @@ sel3 <- sel2 %>%
   filter(Method != "Ridge blavaan") %>%
   droplevels()
 
+# remove ridge regsem because the penalty parameter is zero, so same results as unregularized
+sel4 <- sel3 %>%
+  filter(Method != "Ridge regsem") %>%
+  droplevels()
+
 pd <- position_dodge(0.8)
 
 png(file = "./results/MI_comparison_priors.png", width = 1000, height = 1300)
-ggplot(sel3, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
+ggplot(sel4, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
   geom_point(position = pd, size = 3) +
   geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
-  scale_linetype_manual("", values = c(2, 1, 3, 1)) +
-  scale_colour_manual("", values = c("black", "black", "black", "grey")) + 
+  scale_linetype_manual("", values = c(1, 2, 3)) +
+  scale_colour_manual("", values = c("black", "black", "black")) + 
   ylab("Variable") + xlab("Posterior estimates and 95% CI") + theme_bw(base_size = 25) + 
   guides(colour = guide_legend(nrow = 2), linetype = guide_legend(nrow = 2)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm")) 
