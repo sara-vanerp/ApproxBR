@@ -125,6 +125,16 @@ save(cv_fit_en, file = "./results/fitobjects/fit_regsem_enet_MI.RData")
 
 ##### Results: Estimation ------
 
+# lavaan (no regularization)
+out_lav <- parameterEstimates(fit_lav)
+out_lav$par <- paste(out_lav$lhs, out_lav$op, out_lav$rhs, sep = "")
+ci_lav <- out_lav[, c("ci.lower", "ci.upper")]
+mod_lav <- NA
+res0 <- cbind.data.frame(out_lav[, c("est", "par")], ci_lav, mod_lav)
+colnames(res0) <- c("mean", "par", "ci.lower", "ci.upper", "mode")
+res0$package <- "lavaan"
+res0$prior <- "unregularized"
+
 # shrinkem
 load("./results/fitobjects/fit_shrinkem_ridge_MI.RData")
 res1 <- cbind.data.frame(rownames(shrink_ridge$estimates),
@@ -162,7 +172,7 @@ res5 <- cbind.data.frame(names(est_regsem_en), est_regsem_en, NA, NA, "regsem", 
 colnames(res5) <- c("par", "mean", "ci.lower", "ci.upper", "package", "prior", "mode")
 
 # combine
-res <- rbind.data.frame(res1, res2, res3, res4, res5)
+res <- rbind.data.frame(res0, res1, res2, res3, res4, res5)
 # change naming effects of age to be in line across packages
 parsel <- grep("age -> ", res$par)
 res$par[parsel] <- paste0(gsub("age -> ", "", res$par[parsel]), "~age")
@@ -177,6 +187,9 @@ res$sel[sel] <- sel.regsem
 
 res$meth <- paste(res$prior, res$package, sep = " ")
 
+# remove variance of age for lavaan
+res <- res[-grep("age~~age", res$par), ]
+
 save(res, file = "./results/full_results_MI.RData")
 
 res.sel <- res[grep("age", res$par), ]
@@ -186,7 +199,7 @@ res.sel %>%
 
 # Visualize estimates
 load("./results/full_results_MI.RData")
-colnames(res) <- c("Variable", "Mean", "Mode", "LB", "UB", "Package", "Prior", "Included", "Method")
+colnames(res) <- c("Mean", "Variable", "LB", "UB", "Mode", "Package", "Prior", "Included", "Method")
 
 # select only regularized parameters
 sel <- res[grep("age", res$Variable), ]
@@ -201,22 +214,29 @@ levels(sel$Method) <- list("Elastic net regsem" = "enet regsem",
                            "Horseshoe shrinkem" = "hs shrinkem",
                            "Ridge blavaan" = "ridge blavaan",
                            "Ridge regsem" = "ridge regsem",
-                           "Ridge shrinkem" = "ridge shrinkem")
+                           "Ridge shrinkem" = "ridge shrinkem",
+                           "Unregularized lavaan" = "unregularized lavaan")
 
 # decided to remove the elastic net from the results because it pulls all effects to zero
 sel2 <- sel %>%
   filter(Method != "Elastic net regsem") %>%
   droplevels()
 
+# decided to remove the ridge blavaan because it is not comparable to ridge shrinkem
+# ridge shrinkem optimizes the ridge parameter, while ridge blavaan uses a fixed value, so is more EB-like
+sel3 <- sel2 %>%
+  filter(Method != "Ridge blavaan") %>%
+  droplevels()
+
 pd <- position_dodge(0.8)
 
 png(file = "./results/MI_comparison_priors.png", width = 1000, height = 1300)
-ggplot(sel2, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
+ggplot(sel3, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
   geom_point(position = pd, size = 3) +
   geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
-  scale_linetype_manual("", values = c(1, 2, 3, 1)) +
-  scale_colour_manual("", values = c("black", "blue", "blue", "blue")) + 
+  scale_linetype_manual("", values = c(2, 1, 3, 1)) +
+  scale_colour_manual("", values = c("black", "black", "black", "grey")) + 
   ylab("Variable") + xlab("Posterior estimates and 95% CI") + theme_bw(base_size = 25) + 
   guides(colour = guide_legend(nrow = 2), linetype = guide_legend(nrow = 2)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm")) 
