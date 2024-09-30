@@ -128,6 +128,26 @@ fit <- sampling(mod, data = standat, iter = 8000)
 save(fit, file = "./results/fitobjects/fit_exact_hs_mediation.RData")
 
 ##### Results: Estimation ------
+# blavaan with uninformative priors
+load("./results/fitobjects/fit_blav_uninformative_mediation.RData")
+draws_blav <- as.matrix(blavInspect(fit_blav, what = "mcmc"))
+# compute indirect effects
+draws_ab <- matrix(NA, nrow = nrow(draws_blav), ncol = nM)
+for(i in 1:nM){
+  draws_a <- draws_blav[, grep(paste0("M", i, "~X"), colnames(draws_blav), fixed = TRUE)]
+  draws_b <- draws_blav[, grep(paste0("Y~M", i, "$"), colnames(draws_blav))]
+  draws_ab[, i] <- draws_a * draws_b
+}
+
+res0 <- data.frame(colMeans(draws_ab))
+res0$par <- paste0("beta", 1:nM)
+res0$LB <- apply(draws_ab, 2, function(x) quantile(x, 0.025))
+res0$UB <- apply(draws_ab, 2, function(x) quantile(x, 0.975))
+res0$mode <- posterior.mode(draws_ab)
+colnames(res0) <- c("mean", "par", "ci.lower", "ci.upper", "mode")
+res0$package <- "blavaan"
+res0$prior <- "uninformative"
+
 # shrinkem
 load("./results/fitobjects/fit_shrinkem_ridge_mediation.RData")
 res1 <- cbind.data.frame(rownames(shrink_ridge$estimates),
@@ -177,7 +197,7 @@ colnames(res4) <- c("par", "prior", "package", "mean", "ci.lower", "ci.upper", "
 res4$par <- paste0("beta", 1:nM)
 
 # combine
-res <- rbind.data.frame(res1, res2, res3, res4)
+res <- rbind.data.frame(res0, res1, res2, res3, res4)
 save(res, file = "./results/full_results_mediation.Rdata")
 
 load("./results/full_results_mediation.Rdata")
@@ -189,7 +209,7 @@ for(i in 1:nrow(res)){
 }
 res$meth <- paste(res$prior, res$package, sep = " ")
 
-colnames(res) <- c("Variable", "Mean", "Mode", "LB", "UB", "Algorithm", "Prior", "Selected", "Method")
+colnames(res) <- c("Mean", "Variable", "LB", "UB", "Mode", "Algorithm", "Prior", "Selected", "Method")
 
 # Plot estimates
 pd <- position_dodge(0.8)
@@ -215,14 +235,24 @@ mcmc_areas(sel[, 31:32],
 
 # Remove the exact horseshoe from the results because those point estimates
 # do not seem really reflective of the heavy-tailed posteriors
-sel <- which(res$Method != "hs exact")
+# Also remove ridge blavaan because that imposes priors on the direct effects instead of the indirect directly
+sel1 <- which(res$Method != "hs exact")
+res_sel <- res[sel1, ]
+res_sel2 <- res_sel[which(res_sel$Method != "ridge blavaan"), ]
+
+# change names factor levels
+res_sel2$Method <- factor(res_sel2$Method)
+levels(res_sel2$Method) <- list("Horseshoe shrinkem" = "hs shrinkem",
+                           "Ridge shrinkem" = "ridge shrinkem",
+                           "Unregularized blavaan" = "uninformative blavaan")
+
 png(file = "./results/mediation_comparison_priors.png", width = 1000, height = 1300)
-ggplot(res[sel, ], aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
+ggplot(res_sel2, aes(x = Mean, y = Variable, colour = Method, linetype = Method)) +
   geom_errorbar(aes(xmin = LB, xmax = UB), position = pd, linewidth = 1) +
   geom_point(position = pd, size = 3) +
   geom_point(aes(x = Mode), position = pd, size = 3, shape = 17) +
-  scale_linetype_manual("", values = c(1, 2, 1)) +
-  scale_colour_manual("", values = c("black", "red", "blue")) +
+  scale_linetype_manual("", values = c(1, 1, 3)) +
+  scale_colour_manual("", values = c("black", "grey", "black")) +
   ylab("Variable") + xlab("Posterior estimates and 95% CI") + theme_bw(base_size = 25) + 
   guides(colour = guide_legend(nrow = 2), linetype = guide_legend(nrow = 2)) +
   theme(axis.text.x = element_text(angle = 90), legend.title = element_blank(), legend.position = "bottom", legend.key.width = unit(1.5, "cm")) 
@@ -244,7 +274,7 @@ pmse_fun <- function(draws_ind, dir, testX, testY){
 
 # use the direct effect from blavaan for all PMSEs
 # note that the number of samples differs so use the mean estimate for the direct effect
-load("./results/fitobjects/fit_blavaan_ridge_mediation.RData")
+load("./results/fitobjects/fit_blav_uninformative_mediation.RData")
 draws_blav <- as.matrix(blavInspect(fit_blav, what = "mcmc"))
 draws_dir <- draws_blav[, grep("Y~X", colnames(draws_blav))]
 dir <- mean(draws_dir)
