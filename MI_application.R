@@ -323,3 +323,622 @@ out[6, 2:20] <- pmse_var_lav
 print(out, digits = 2)
 
 
+
+
+##### Analyses revision 1 -----
+
+## Visualize posterior modes
+load("./results/full_results_MI.RData")
+
+mle <- res[which(res$package == "lavaan"), ]
+mle$mode <- mle$mean
+
+regsem <- res[which(res$package == "regsem"), ]
+sel <- regsem[which(regsem$prior != "enet"), ]
+sel$mode <- sel$mean
+sel$prior <- "ridge_regsem"
+
+shrinkem <- res[which(res$package == "shrinkem"), ]
+
+plotdat <- rbind.data.frame(mle, sel, shrinkem)
+
+plotdat$prior <- plyr::revalue(plotdat$prior, 
+                           c("unregularized" = "Unregularized",
+                             "ridge" = "Ridge",
+                             "hs" = "Horseshoe",
+                             "ridge_regsem" = "Classical ridge"))
+
+png(file = "./results/hist_mode_MI.png", width = 1000, height = 800)
+ggplot(plotdat, aes(x = `mode`)) +
+  geom_histogram() +
+  facet_grid(~`prior`) +
+  theme_bw(base_size = 25)
+dev.off()
+
+##### Additional cross-validation on the full, half and 25% of the data -----
+
+## Use 10-fold CV to compute the PMSE and visualize with a boxplot
+K <- 10
+nrow(holzinger.swineford)/K
+
+sel <- grep("t|age", colnames(holzinger.swineford))
+df <- holzinger.swineford[sample(nrow(holzinger.swineford), replace = FALSE), ] # shuffle data
+dfs <- data.frame(scale(df[, sel])) # scale data
+fold <- list()
+fold[[1]] <- dfs[1:30, ]
+fold[[2]] <- dfs[31:60, ]
+fold[[3]] <- dfs[61:90, ]
+fold[[4]] <- dfs[91:120, ]
+fold[[5]] <- dfs[121:150, ]
+fold[[6]] <- dfs[151:180, ]
+fold[[7]] <- dfs[181:210, ]
+fold[[8]] <- dfs[211:240, ]
+fold[[9]] <- dfs[241:270, ]
+fold[[10]] <- dfs[271:nrow(dfs), ]
+
+# Run the analysis on k-1 folds using the remaining fold as test set
+out <- vector(mode = "list", length = K)
+for(k in 1:K){
+  test <- fold[[k]]
+  fold_train <- fold
+  fold_train[[k]] <- NULL
+  train <- do.call(rbind.data.frame, fold_train)
+  
+  # Option 1: Approximate with shrinkem (ridge and horseshoe priors)
+  
+  # run the model with lavaan
+  # note: LiangJacobucci2020 use this model to detect uniform bias only, which is why the interaction terms eta*age are not included
+  # LiangJacobucci2020 describe using t26 instead of t04 but due to missing data in t26, t04 is used here.
+  mod_lav <- '
+  spatial =~ t01_visperc + t02_cubes + t03_frmbord + t04_lozenges
+  verbal =~ t05_geninfo + t06_paracomp + t07_sentcomp + t08_wordclas + t09_wordmean
+  speed =~ t10_addition + t11_code + t12_countdot + t13_sccaps
+  memory =~ t14_wordrecg + t15_numbrecg + t16_figrrecg + t17_objnumb + t18_numbfig + t19_figword
+  t01_visperc ~ age
+  t02_cubes ~ age
+  t03_frmbord ~ age
+  t04_lozenges ~ age
+  t05_geninfo ~ age
+  t06_paracomp ~ age
+  t07_sentcomp ~ age
+  t08_wordclas ~ age
+  t09_wordmean ~ age
+  t10_addition ~ age
+  t11_code ~ age
+  t12_countdot ~ age
+  t13_sccaps ~ age
+  t14_wordrecg ~ age
+  t15_numbrecg ~ age
+  t16_figrrecg ~ age
+  t17_objnumb ~ age
+  t18_numbfig ~ age
+  t19_figword ~ age
+'
+  
+  fit_lav <- sem(mod_lav, data = train, std.lv = TRUE)
+  
+  # lavaan results (no regularization)
+  out_lav <- parameterEstimates(fit_lav)
+  out_lav$par <- paste(out_lav$lhs, out_lav$op, out_lav$rhs, sep = "")
+  ci_lav <- out_lav[, c("ci.lower", "ci.upper")]
+  mod_lav <- NA
+  res0 <- cbind.data.frame(out_lav[, c("est", "par")], ci_lav, mod_lav)
+  colnames(res0) <- c("mean", "par", "ci.lower", "ci.upper", "mode")
+  res0$package <- "lavaan"
+  res0$prior <- "unregularized"
+  
+  # extract MLEs and covariance matrix for regression parameters corresponding to age
+  mle <- coef(fit_lav)
+  mleSel <- mle[grep("~age", names(mle))]
+  covmat <- lavInspect(fit_lav, what = "vcov")
+  id <- grep("~age", colnames(covmat))
+  covmatSel <- covmat[id, id]
+  
+  # shrinkem with ridge prior
+  shrink_ridge <- shrinkem(mleSel, covmatSel, type="ridge", iterations = 5000)
+  
+  res1 <- cbind.data.frame(rownames(shrink_ridge$estimates),
+                           shrink_ridge$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "ridge")
+  colnames(res1) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # shrinkem with horseshoe prior
+  shrink_hs <- shrinkem(mleSel, covmatSel, type="horseshoe", iterations = 5000)
+  
+  res2 <- cbind.data.frame(rownames(shrink_hs$estimates),
+                           shrink_hs$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "hs")
+  colnames(res2) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # extract estimated prior variance for use in blavaan
+  d <- shrink_ridge$draws
+  lam2 <- d$lambda2
+  lam <- sqrt(lam2)
+  mean(lam) # 0.1
+  
+  # option 3: Classical with regsem (ridge and elastic net penalties)
+  # same settings as in LiangJacobucci2020, only AIC no longer seems possible as metric
+  
+  # ridge
+  cv_fit_ridge <- cv_regsem(fit_lav,
+                            pars_pen = "regressions",
+                            metric = "BIC",
+                            n.lambda = 15,
+                            jump = 0.05,
+                            lambda.start = 0,
+                            alpha = 1,
+                            type = "ridge")
+  
+  est_regsem_ridge <- cv_fit_ridge$final_pars
+  res4 <- cbind.data.frame(names(est_regsem_ridge), est_regsem_ridge, NA, NA, "regsem", "ridge", NA)
+  colnames(res4) <- c("par", "mean", "ci.lower", "ci.upper", "package", "prior", "mode")
+  
+  # combine results
+  res <- rbind.data.frame(res0, res1, res2, res4)
+  # change naming effects of age to be in line across packages
+  parsel <- grep("age -> ", res$par)
+  res$par[parsel] <- paste0(gsub("age -> ", "", res$par[parsel]), "~age")
+  
+  # select variables based on 95% CI 
+  # 1 if relevant and selected, 0 if not
+  res$sel <- ifelse(res$ci.lower > 0 | res$ci.upper < 0, 1, 0)
+  # add selection regsem
+  sel <- which(res$package == "regsem")
+  sel.regsem <- ifelse(res[sel, "mean"] == 0, 0, 1)
+  res$sel[sel] <- sel.regsem
+  
+  res$meth <- paste(res$prior, res$package, sep = " ")
+  
+  # remove variance of age for lavaan
+  res <- res[-grep("age~~age", res$par), ]
+  
+  # remove regsem elastic net and ridge blavaan
+  res <- res[which(res$meth %in% c("hs shrinkem", "ridge regsem", "ridge shrinkem", "unregularized lavaan")), ]
+  
+  # for a simplified PMSE, ignore the influence of the latent variable since this is constant across methods
+  testY <- test[, 3:21]
+  pmse_fun <- function(testY, predY){
+    pmse = sum(colSums((testY-predY)^2))/(ncol(testY)*nrow(testY))
+    return(pmse)
+  }
+  
+  # shrinkage methods
+  out[[k]] <- data.frame(NA)
+  lvls <- c("hs shrinkem", "ridge regsem", "ridge shrinkem")
+  for(i in 1:length(lvls)){
+    gamma <- res[which(res$meth == lvls[i]), "mean"]
+    
+    predY <- sapply(gamma, function(x, xtest = test$age){
+      x*xtest
+    })
+    
+    pmse <- pmse_fun(testY, predY)
+    
+    out[[k]][i, 1] <- levels(as.factor(res$meth))[i]
+    out[[k]][i, 2] <- pmse
+  }
+  
+  # unregularized solution lavaan
+  gamma <- parameterestimates(fit_lav)[20:38, "est"]
+  
+  predY <- sapply(gamma, function(x, xtest = test$age){
+    x*xtest
+  })
+  
+  # PMSE
+  out[[k]][4, 1] <- "unregularized_lavaan"
+  out[[k]][4, 2] <- pmse_fun(testY, predY)
+  
+  colnames(out[[k]]) <- c("Method", "PMSE")
+}
+
+save(out, file ="./results/CV_PMSE_MI.RData")
+
+pmse <- do.call(rbind.data.frame, out)
+
+pmse$Method <- plyr::revalue(pmse$Method, 
+                             c("hs shrinkem" = "App. horseshoe",
+                               "ridge regsem" = "Classical ridge",
+                               "ridge shrinkem" = "App. ridge",
+                               "unregularized_lavaan" = "Unregularized"))
+
+png(file = "./results/CV_PMSE_MI.png", width = 1000, height = 800)
+ggplot(pmse, aes(x = Method, y = PMSE)) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme_bw(base_size = 25)
+dev.off()
+
+## 10-fold CV PMSE for half of the data set
+N <- round(0.5*nrow(holzinger.swineford))
+sel <- sample(1:nrow(holzinger.swineford), N, replace = FALSE)
+half_df <- holzinger.swineford[sel, ]
+
+## Use 10-fold CV to compute the PMSE and visualize with a boxplot
+K <- 10
+nrow(half_df)/K
+
+sel <- grep("t|age", colnames(half_df))
+df <- half_df[sample(nrow(half_df), replace = FALSE), ] # shuffle data
+dfs <- data.frame(scale(df[, sel])) # scale data
+fold <- list()
+fold[[1]] <- dfs[1:15, ]
+fold[[2]] <- dfs[16:30, ]
+fold[[3]] <- dfs[31:45, ]
+fold[[4]] <- dfs[46:60, ]
+fold[[5]] <- dfs[61:75, ]
+fold[[6]] <- dfs[76:90, ]
+fold[[7]] <- dfs[91:105, ]
+fold[[8]] <- dfs[106:120, ]
+fold[[9]] <- dfs[121:135, ]
+fold[[10]] <- dfs[136:nrow(dfs), ]
+
+# Run the analysis on k-1 folds using the remaining fold as test set
+out <- vector(mode = "list", length = K)
+for(k in 1:K){
+  test <- fold[[k]]
+  fold_train <- fold
+  fold_train[[k]] <- NULL
+  train <- do.call(rbind.data.frame, fold_train)
+  
+  # Option 1: Approximate with shrinkem (ridge and horseshoe priors)
+  
+  # run the model with lavaan
+  # note: LiangJacobucci2020 use this model to detect uniform bias only, which is why the interaction terms eta*age are not included
+  # LiangJacobucci2020 describe using t26 instead of t04 but due to missing data in t26, t04 is used here.
+  mod_lav <- '
+  spatial =~ t01_visperc + t02_cubes + t03_frmbord + t04_lozenges
+  verbal =~ t05_geninfo + t06_paracomp + t07_sentcomp + t08_wordclas + t09_wordmean
+  speed =~ t10_addition + t11_code + t12_countdot + t13_sccaps
+  memory =~ t14_wordrecg + t15_numbrecg + t16_figrrecg + t17_objnumb + t18_numbfig + t19_figword
+  t01_visperc ~ age
+  t02_cubes ~ age
+  t03_frmbord ~ age
+  t04_lozenges ~ age
+  t05_geninfo ~ age
+  t06_paracomp ~ age
+  t07_sentcomp ~ age
+  t08_wordclas ~ age
+  t09_wordmean ~ age
+  t10_addition ~ age
+  t11_code ~ age
+  t12_countdot ~ age
+  t13_sccaps ~ age
+  t14_wordrecg ~ age
+  t15_numbrecg ~ age
+  t16_figrrecg ~ age
+  t17_objnumb ~ age
+  t18_numbfig ~ age
+  t19_figword ~ age
+'
+  
+  fit_lav <- sem(mod_lav, data = train, std.lv = TRUE)
+  
+  # lavaan results (no regularization)
+  out_lav <- parameterEstimates(fit_lav)
+  out_lav$par <- paste(out_lav$lhs, out_lav$op, out_lav$rhs, sep = "")
+  ci_lav <- out_lav[, c("ci.lower", "ci.upper")]
+  mod_lav <- NA
+  res0 <- cbind.data.frame(out_lav[, c("est", "par")], ci_lav, mod_lav)
+  colnames(res0) <- c("mean", "par", "ci.lower", "ci.upper", "mode")
+  res0$package <- "lavaan"
+  res0$prior <- "unregularized"
+  
+  # extract MLEs and covariance matrix for regression parameters corresponding to age
+  mle <- coef(fit_lav)
+  mleSel <- mle[grep("~age", names(mle))]
+  covmat <- lavInspect(fit_lav, what = "vcov")
+  id <- grep("~age", colnames(covmat))
+  covmatSel <- covmat[id, id]
+  
+  # shrinkem with ridge prior
+  shrink_ridge <- shrinkem(mleSel, covmatSel, type="ridge", iterations = 5000)
+  
+  res1 <- cbind.data.frame(rownames(shrink_ridge$estimates),
+                           shrink_ridge$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "ridge")
+  colnames(res1) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # shrinkem with horseshoe prior
+  shrink_hs <- shrinkem(mleSel, covmatSel, type="horseshoe", iterations = 5000)
+  
+  res2 <- cbind.data.frame(rownames(shrink_hs$estimates),
+                           shrink_hs$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "hs")
+  colnames(res2) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # extract estimated prior variance for use in blavaan
+  d <- shrink_ridge$draws
+  lam2 <- d$lambda2
+  lam <- sqrt(lam2)
+  mean(lam) # 0.1
+  
+  # option 3: Classical with regsem (ridge and elastic net penalties)
+  # same settings as in LiangJacobucci2020, only AIC no longer seems possible as metric
+  
+  # ridge
+  cv_fit_ridge <- cv_regsem(fit_lav,
+                            pars_pen = "regressions",
+                            metric = "BIC",
+                            n.lambda = 15,
+                            jump = 0.05,
+                            lambda.start = 0,
+                            alpha = 1,
+                            type = "ridge")
+  
+  est_regsem_ridge <- cv_fit_ridge$final_pars
+  res4 <- cbind.data.frame(names(est_regsem_ridge), est_regsem_ridge, NA, NA, "regsem", "ridge", NA)
+  colnames(res4) <- c("par", "mean", "ci.lower", "ci.upper", "package", "prior", "mode")
+  
+  # combine results
+  res <- rbind.data.frame(res0, res1, res2, res4)
+  # change naming effects of age to be in line across packages
+  parsel <- grep("age -> ", res$par)
+  res$par[parsel] <- paste0(gsub("age -> ", "", res$par[parsel]), "~age")
+  
+  # select variables based on 95% CI 
+  # 1 if relevant and selected, 0 if not
+  res$sel <- ifelse(res$ci.lower > 0 | res$ci.upper < 0, 1, 0)
+  # add selection regsem
+  sel <- which(res$package == "regsem")
+  sel.regsem <- ifelse(res[sel, "mean"] == 0, 0, 1)
+  res$sel[sel] <- sel.regsem
+  
+  res$meth <- paste(res$prior, res$package, sep = " ")
+  
+  # remove variance of age for lavaan
+  res <- res[-grep("age~~age", res$par), ]
+  
+  # remove regsem elastic net and ridge blavaan
+  res <- res[which(res$meth %in% c("hs shrinkem", "ridge regsem", "ridge shrinkem", "unregularized lavaan")), ]
+  
+  # for a simplified PMSE, ignore the influence of the latent variable since this is constant across methods
+  testY <- test[, 3:21]
+  pmse_fun <- function(testY, predY){
+    pmse = sum(colSums((testY-predY)^2))/(ncol(testY)*nrow(testY))
+    return(pmse)
+  }
+  
+  # shrinkage methods
+  out[[k]] <- data.frame(NA)
+  lvls <- c("hs shrinkem", "ridge regsem", "ridge shrinkem")
+  for(i in 1:length(lvls)){
+    gamma <- res[which(res$meth == lvls[i]), "mean"]
+    
+    predY <- sapply(gamma, function(x, xtest = test$age){
+      x*xtest
+    })
+    
+    pmse <- pmse_fun(testY, predY)
+    
+    out[[k]][i, 1] <- levels(as.factor(res$meth))[i]
+    out[[k]][i, 2] <- pmse
+  }
+  
+  # unregularized solution lavaan
+  gamma <- parameterestimates(fit_lav)[20:38, "est"]
+  
+  predY <- sapply(gamma, function(x, xtest = test$age){
+    x*xtest
+  })
+  
+  # PMSE
+  out[[k]][4, 1] <- "unregularized_lavaan"
+  out[[k]][4, 2] <- pmse_fun(testY, predY)
+  
+  colnames(out[[k]]) <- c("Method", "PMSE")
+}
+
+save(out, file ="./results/CV_PMSE_MI_half.RData")
+
+pmse <- do.call(rbind.data.frame, out)
+
+pmse$Method <- plyr::revalue(pmse$Method, 
+                             c("hs shrinkem" = "App. horseshoe",
+                               "ridge regsem" = "Classical ridge",
+                               "ridge shrinkem" = "App. ridge",
+                               "unregularized_lavaan" = "Unregularized"))
+
+png(file = "./results/CV_PMSE_MI_half.png", width = 1000, height = 800)
+ggplot(pmse, aes(x = Method, y = PMSE)) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme_bw(base_size = 25)
+dev.off()
+
+## 10-fold CV PMSE for a quarter of the data set
+N <- round(0.25*nrow(holzinger.swineford))
+sel <- sample(1:nrow(holzinger.swineford), N, replace = FALSE)
+half_df <- holzinger.swineford[sel, ]
+
+## Use 10-fold CV to compute the PMSE and visualize with a boxplot
+K <- 10
+nrow(half_df)/K
+
+sel <- grep("t|age", colnames(half_df))
+df <- half_df[sample(nrow(half_df), replace = FALSE), ] # shuffle data
+dfs <- data.frame(scale(df[, sel])) # scale data
+fold <- list()
+fold[[1]] <- dfs[1:7, ]
+fold[[2]] <- dfs[8:14, ]
+fold[[3]] <- dfs[15:22, ]
+fold[[4]] <- dfs[23:29, ]
+fold[[5]] <- dfs[30:36, ]
+fold[[6]] <- dfs[37:44, ]
+fold[[7]] <- dfs[45:52, ]
+fold[[8]] <- dfs[53:60, ]
+fold[[9]] <- dfs[61:68, ]
+fold[[10]] <- dfs[69:nrow(dfs), ]
+
+# Run the analysis on k-1 folds using the remaining fold as test set
+out <- vector(mode = "list", length = K)
+for(k in 1:K){
+  test <- fold[[k]]
+  fold_train <- fold
+  fold_train[[k]] <- NULL
+  train <- do.call(rbind.data.frame, fold_train)
+  
+  # Option 1: Approximate with shrinkem (ridge and horseshoe priors)
+  
+  # run the model with lavaan
+  # note: LiangJacobucci2020 use this model to detect uniform bias only, which is why the interaction terms eta*age are not included
+  # LiangJacobucci2020 describe using t26 instead of t04 but due to missing data in t26, t04 is used here.
+  mod_lav <- '
+  spatial =~ t01_visperc + t02_cubes + t03_frmbord + t04_lozenges
+  verbal =~ t05_geninfo + t06_paracomp + t07_sentcomp + t08_wordclas + t09_wordmean
+  speed =~ t10_addition + t11_code + t12_countdot + t13_sccaps
+  memory =~ t14_wordrecg + t15_numbrecg + t16_figrrecg + t17_objnumb + t18_numbfig + t19_figword
+  t01_visperc ~ age
+  t02_cubes ~ age
+  t03_frmbord ~ age
+  t04_lozenges ~ age
+  t05_geninfo ~ age
+  t06_paracomp ~ age
+  t07_sentcomp ~ age
+  t08_wordclas ~ age
+  t09_wordmean ~ age
+  t10_addition ~ age
+  t11_code ~ age
+  t12_countdot ~ age
+  t13_sccaps ~ age
+  t14_wordrecg ~ age
+  t15_numbrecg ~ age
+  t16_figrrecg ~ age
+  t17_objnumb ~ age
+  t18_numbfig ~ age
+  t19_figword ~ age
+'
+  
+  fit_lav <- sem(mod_lav, data = train, std.lv = TRUE)
+  
+  # lavaan results (no regularization)
+  out_lav <- parameterEstimates(fit_lav)
+  out_lav$par <- paste(out_lav$lhs, out_lav$op, out_lav$rhs, sep = "")
+  ci_lav <- out_lav[, c("ci.lower", "ci.upper")]
+  mod_lav <- NA
+  res0 <- cbind.data.frame(out_lav[, c("est", "par")], ci_lav, mod_lav)
+  colnames(res0) <- c("mean", "par", "ci.lower", "ci.upper", "mode")
+  res0$package <- "lavaan"
+  res0$prior <- "unregularized"
+  
+  # extract MLEs and covariance matrix for regression parameters corresponding to age
+  mle <- coef(fit_lav)
+  mleSel <- mle[grep("~age", names(mle))]
+  covmat <- lavInspect(fit_lav, what = "vcov")
+  id <- grep("~age", colnames(covmat))
+  covmatSel <- covmat[id, id]
+  
+  # shrinkem with ridge prior
+  shrink_ridge <- shrinkem(mleSel, covmatSel, type="ridge", iterations = 5000)
+  
+  res1 <- cbind.data.frame(rownames(shrink_ridge$estimates),
+                           shrink_ridge$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "ridge")
+  colnames(res1) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # shrinkem with horseshoe prior
+  shrink_hs <- shrinkem(mleSel, covmatSel, type="horseshoe", iterations = 5000)
+  
+  res2 <- cbind.data.frame(rownames(shrink_hs$estimates),
+                           shrink_hs$estimates[, c('shrunk.mean', 'shrunk.mode', 'shrunk.lower', 'shrunk.upper')],
+                           "shrinkem", "hs")
+  colnames(res2) <- c("par", "mean", "mode", "ci.lower", "ci.upper", "package", "prior")
+  
+  # extract estimated prior variance for use in blavaan
+  d <- shrink_ridge$draws
+  lam2 <- d$lambda2
+  lam <- sqrt(lam2)
+  mean(lam) # 0.1
+  
+  # option 3: Classical with regsem (ridge and elastic net penalties)
+  # same settings as in LiangJacobucci2020, only AIC no longer seems possible as metric
+  
+  # ridge
+  cv_fit_ridge <- cv_regsem(fit_lav,
+                            pars_pen = "regressions",
+                            metric = "BIC",
+                            n.lambda = 15,
+                            jump = 0.05,
+                            lambda.start = 0,
+                            alpha = 1,
+                            type = "ridge")
+  
+  est_regsem_ridge <- cv_fit_ridge$final_pars
+  res4 <- cbind.data.frame(names(est_regsem_ridge), est_regsem_ridge, NA, NA, "regsem", "ridge", NA)
+  colnames(res4) <- c("par", "mean", "ci.lower", "ci.upper", "package", "prior", "mode")
+  
+  # combine results
+  res <- rbind.data.frame(res0, res1, res2, res4)
+  # change naming effects of age to be in line across packages
+  parsel <- grep("age -> ", res$par)
+  res$par[parsel] <- paste0(gsub("age -> ", "", res$par[parsel]), "~age")
+  
+  # select variables based on 95% CI 
+  # 1 if relevant and selected, 0 if not
+  res$sel <- ifelse(res$ci.lower > 0 | res$ci.upper < 0, 1, 0)
+  # add selection regsem
+  sel <- which(res$package == "regsem")
+  sel.regsem <- ifelse(res[sel, "mean"] == 0, 0, 1)
+  res$sel[sel] <- sel.regsem
+  
+  res$meth <- paste(res$prior, res$package, sep = " ")
+  
+  # remove variance of age for lavaan
+  res <- res[-grep("age~~age", res$par), ]
+  
+  # remove regsem elastic net and ridge blavaan
+  res <- res[which(res$meth %in% c("hs shrinkem", "ridge regsem", "ridge shrinkem", "unregularized lavaan")), ]
+  
+  # for a simplified PMSE, ignore the influence of the latent variable since this is constant across methods
+  testY <- test[, 3:21]
+  pmse_fun <- function(testY, predY){
+    pmse = sum(colSums((testY-predY)^2))/(ncol(testY)*nrow(testY))
+    return(pmse)
+  }
+  
+  # shrinkage methods
+  out[[k]] <- data.frame(NA)
+  lvls <- c("hs shrinkem", "ridge regsem", "ridge shrinkem")
+  for(i in 1:length(lvls)){
+    gamma <- res[which(res$meth == lvls[i]), "mean"]
+    
+    predY <- sapply(gamma, function(x, xtest = test$age){
+      x*xtest
+    })
+    
+    pmse <- pmse_fun(testY, predY)
+    
+    out[[k]][i, 1] <- levels(as.factor(res$meth))[i]
+    out[[k]][i, 2] <- pmse
+  }
+  
+  # unregularized solution lavaan
+  gamma <- parameterestimates(fit_lav)[20:38, "est"]
+  
+  predY <- sapply(gamma, function(x, xtest = test$age){
+    x*xtest
+  })
+  
+  # PMSE
+  out[[k]][4, 1] <- "unregularized_lavaan"
+  out[[k]][4, 2] <- pmse_fun(testY, predY)
+  
+  colnames(out[[k]]) <- c("Method", "PMSE")
+}
+
+save(out, file ="./results/CV_PMSE_MI_quarter.RData")
+
+pmse <- do.call(rbind.data.frame, out)
+
+pmse$Method <- plyr::revalue(pmse$Method, 
+                             c("hs shrinkem" = "App. horseshoe",
+                               "ridge regsem" = "Classical ridge",
+                               "ridge shrinkem" = "App. ridge",
+                               "unregularized_lavaan" = "Unregularized"))
+
+png(file = "./results/CV_PMSE_MI_quarter.png", width = 1000, height = 800)
+ggplot(pmse, aes(x = Method, y = PMSE)) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme_bw(base_size = 25)
+dev.off()
