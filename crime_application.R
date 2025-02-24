@@ -368,6 +368,20 @@ load("./results/full_results_crime.RData")
 
 res <- res[which(res$Algorithm != "approx"), ] # remove approximate implementation stan
 
+res_ml <- data.frame("Variable" = names(coef(lmfit)),
+                     "Prior" = "Unregularized",
+                     "Algorithm" = "exact",
+                     "Mean" = coef(lmfit),
+                     "LB" = NA,
+                     "UB" = NA,
+                     "Mode" = coef(lmfit),
+                     "Included" = NA)
+
+res_ml <- res_ml[-which(res_ml$Mode == max(res_ml$Mode)), ] # Remove extreme estimate
+res_ml <- res_ml[-which(res_ml$Mode == min(res_ml$Mode)), ] # Remove extreme estimate
+
+res <- rbind.data.frame(res, res_ml)
+
 res$Prior <- plyr::revalue(res$Prior, 
                                c("hs" = "Horseshoe",
                                  "lasso" = "Lasso",
@@ -377,7 +391,7 @@ png(file = "./results/hist_mode_crime.png", width = 1000, height = 800)
 ggplot(res, aes(x = `Mode`)) +
   geom_histogram() +
   facet_grid(`Algorithm`~`Prior`) +
-  theme_bw(base_size = 25)
+  theme_bw(base_size = 25) + ylab("")
 dev.off()
 
 ##### Additional cross-validation on the full data and half of the data -----

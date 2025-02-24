@@ -333,26 +333,26 @@ load("./results/full_results_MI.RData")
 mle <- res[which(res$package == "lavaan"), ]
 mle$mode <- mle$mean
 
-regsem <- res[which(res$package == "regsem"), ]
-sel <- regsem[which(regsem$prior != "enet"), ]
-sel$mode <- sel$mean
-sel$prior <- "ridge_regsem"
+# not adding regsem because the optimal penalty parameter was 0
+#regsem <- res[which(res$package == "regsem"), ]
+#sel <- regsem[which(regsem$prior != "enet"), ]
+#sel$mode <- sel$mean
+#sel$prior <- "ridge_regsem"
 
 shrinkem <- res[which(res$package == "shrinkem"), ]
 
-plotdat <- rbind.data.frame(mle, sel, shrinkem)
+plotdat <- rbind.data.frame(mle, shrinkem)
 
 plotdat$prior <- plyr::revalue(plotdat$prior, 
                            c("unregularized" = "Unregularized",
                              "ridge" = "Ridge",
-                             "hs" = "Horseshoe",
-                             "ridge_regsem" = "Classical ridge"))
+                             "hs" = "Horseshoe"))
 
 png(file = "./results/hist_mode_MI.png", width = 1000, height = 800)
 ggplot(plotdat, aes(x = `mode`)) +
   geom_histogram() +
   facet_grid(~`prior`) +
-  theme_bw(base_size = 25)
+  theme_bw(base_size = 25) + ylab("") + xlab("Mode")
 dev.off()
 
 ##### Additional cross-validation on the full, half and 25% of the data -----
@@ -534,6 +534,7 @@ for(k in 1:K){
 
 save(out, file ="./results/CV_PMSE_MI.RData")
 
+load("./results/CV_PMSE_MI.RData")
 pmse <- do.call(rbind.data.frame, out)
 
 pmse$Method <- plyr::revalue(pmse$Method, 
@@ -541,6 +542,8 @@ pmse$Method <- plyr::revalue(pmse$Method,
                                "ridge regsem" = "Classical ridge",
                                "ridge shrinkem" = "App. ridge",
                                "unregularized_lavaan" = "Unregularized"))
+
+pmse <- pmse[-which(pmse$Method == "Classical ridge"), ]
 
 png(file = "./results/CV_PMSE_MI.png", width = 1000, height = 800)
 ggplot(pmse, aes(x = Method, y = PMSE)) +
@@ -731,6 +734,7 @@ for(k in 1:K){
 
 save(out, file ="./results/CV_PMSE_MI_half.RData")
 
+load("./results/CV_PMSE_MI_half.RData")
 pmse <- do.call(rbind.data.frame, out)
 
 pmse$Method <- plyr::revalue(pmse$Method, 
@@ -738,6 +742,8 @@ pmse$Method <- plyr::revalue(pmse$Method,
                                "ridge regsem" = "Classical ridge",
                                "ridge shrinkem" = "App. ridge",
                                "unregularized_lavaan" = "Unregularized"))
+
+pmse <- pmse[-which(pmse$Method == "Classical ridge"), ]
 
 png(file = "./results/CV_PMSE_MI_half.png", width = 1000, height = 800)
 ggplot(pmse, aes(x = Method, y = PMSE)) +
@@ -928,6 +934,7 @@ for(k in 1:K){
 
 save(out, file ="./results/CV_PMSE_MI_quarter.RData")
 
+load("./results/CV_PMSE_MI_quarter.RData")
 pmse <- do.call(rbind.data.frame, out)
 
 pmse$Method <- plyr::revalue(pmse$Method, 
@@ -935,6 +942,8 @@ pmse$Method <- plyr::revalue(pmse$Method,
                                "ridge regsem" = "Classical ridge",
                                "ridge shrinkem" = "App. ridge",
                                "unregularized_lavaan" = "Unregularized"))
+
+pmse <- pmse[-which(pmse$Method == "Classical ridge"), ]
 
 png(file = "./results/CV_PMSE_MI_quarter.png", width = 1000, height = 800)
 ggplot(pmse, aes(x = Method, y = PMSE)) +
