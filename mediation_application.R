@@ -299,4 +299,155 @@ draws_hs <- shrink_hs$draws$beta
 pmse_hs <- sapply(draws_hs, pmse_fun, dir = dir, testX = xtest, testY = ytest)
 mean(pmse_hs)
 
+##### Analyses revision 1 -----
+
+## Visualize posterior modes
+load("./results/full_results_mediation.Rdata")
+
+# select methods that are discussed in the manuscript
+unreg <- res[which(res$package == "blavaan" & res$prior == "uninformative"), ]
+hs <- res[which(res$package == "shrinkem" & res$prior == "hs"), ]
+ridge <- res[which(res$package == "shrinkem" & res$prior == "ridge"), ]
+plotdat <- rbind.data.frame(unreg, hs, ridge)
+
+plotdat$prior <- plyr::revalue(plotdat$prior, 
+                               c("uninformative" = "Unregularized",
+                                 "ridge" = "Ridge",
+                                 "hs" = "Horseshoe"))
+
+png(file = "./results/hist_mode_mediation.png", width = 1000, height = 800)
+ggplot(plotdat, aes(x = `mode`)) +
+  geom_histogram() +
+  facet_grid(~`prior`) +
+  theme_bw(base_size = 25) + ylab("") + xlab("Mode")
+dev.off()
+
+# check modes within 0.1 of 0
+plotdat %>%
+  group_by(prior) %>%
+  summarize(sum(`mode` > -0.1 & `mode` < 0.1))
+
+# check modes within 0.01 of 0
+plotdat %>%
+  group_by(prior) %>%
+  summarize(sum(`mode` > -0.01 & `mode` < 0.01))
+
+
+##### Additional cross-validation on the full data -----
+## Note: using half or a quarter of the data is not possible due to the small p to n ratio
+df <- cbind.data.frame(x, y, MselAB)
+colnames(df) <- c("X", "Y", paste0("M", 1:50))
+df <- df[sample(nrow(df), replace = FALSE), ] # shuffle data
+dfs <- data.frame(scale(df)) # scale data
+
+## Use 10-fold CV to compute the PMSE and visualize with a boxplot
+K <- 10
+nrow(df)/K
+
+fold <- list()
+fold[[1]] <- dfs[1:8, ]
+fold[[2]] <- dfs[9:16, ]
+fold[[3]] <- dfs[17:24, ]
+fold[[4]] <- dfs[25:32, ]
+fold[[5]] <- dfs[33:40, ]
+fold[[6]] <- dfs[41:49, ]
+fold[[7]] <- dfs[50:58, ]
+fold[[8]] <- dfs[59:67, ]
+fold[[9]] <- dfs[68:76, ]
+fold[[10]] <- dfs[77:nrow(dfs), ]
+
+# Run the analysis on k-1 folds using the remaining fold as test set
+out <- vector(mode = "list", length = K)
+for(k in 1:K){
+  test <- fold[[k]]
+  xtest <- test$X
+  ytest <- test$Y
+  fold_train <- fold
+  fold_train[[k]] <- NULL
+  train <- do.call(rbind.data.frame, fold_train)
+  
+  # Option 1: Approximate with shrinkem (ridge and horseshoe priors)
+  # because we want to regularize the indirect effects (ab), we need to first
+  # fit the model with blavaan using uninformative priors to get the MLE and error cov matrix
+  
+  # model specification
+  nM <- 50
+  M <- paste0("M", 1:nM, " ~ ", "X \n")
+  Y <- c("Y ~ ", paste0("M", 1:nM, sep = " + "), "X \n")
+  lavmod <- c(M, Y)
+  
+  defaultPriors <- dpriors(beta = "normal(0, 10000)") 
+  
+  fit_blav <- bsem(lavmod, 
+                   data = train, 
+                   std.lv = TRUE, 
+                   dp = defaultPriors,
+                   bcontrol = list(cores = 3),
+                   seed = seed)
+  
+  draws <- as.matrix(blavInspect(fit_blav, what = "mcmc"))
+  
+  # compute indirect effects
+  draws_ab <- matrix(NA, nrow = nrow(draws), ncol = nM)
+  for(i in 1:nM){
+    draws_a <- draws[, grep(paste0("M", i, "~X"), colnames(draws), fixed = TRUE)]
+    draws_b <- draws[, grep(paste0("Y~M", i, "$"), colnames(draws))]
+    draws_ab[, i] <- draws_a * draws_b
+  }
+  
+  mle <- colMeans(draws_ab)
+  covmat <- cov(draws_ab)
+  
+  # shrinkem with ridge prior
+  shrink_ridge <- shrinkem(mle, covmat, type="ridge", iterations = 4000)
+  
+  # shrinkem with horseshoe prior
+  shrink_hs <- shrinkem(mle, covmat, type="horseshoe", iterations = 4000)
+  
+  # compute PMSE
+  out[[k]] <- data.frame(NA)
+  # for every draw of an indirect effect, add the direct effect
+  # multiply the total effect with the test X
+  # compute the difference with the test Y squared and take the mean over the Y values
+  # plot the predictive distribution or take its mean
+  pmse_fun <- function(draws_ind, dir, testX, testY){
+    total = draws_ind + dir
+    abX = as.matrix(total) %*% as.matrix(t(testX))
+    predY = colSums(abX)
+    pmse = mean((testY - predY)^2)
+    return(pmse)
+  }
+  
+  # use the direct effect from blavaan for all PMSEs
+  # note that the number of samples differs so use the mean estimate for the direct effect
+  draws_dir <- draws[, grep("Y~X", colnames(draws))]
+  dir <- mean(draws_dir)
+  pmse_blav <- sapply(draws_ab, pmse_fun, dir = dir, testX = xtest, testY = ytest)
+  out[[k]][1, 1] <- "Unregularized"
+  out[[k]][1, 2] <- mean(pmse_blav)
+  
+  draws_ridge <- shrink_ridge$draws$beta
+  pmse_ridge <- sapply(draws_ridge, pmse_fun, dir = dir, testX = xtest, testY = ytest)
+  out[[k]][2, 1] <- "App. ridge"
+  out[[k]][2, 2] <- mean(pmse_ridge)
+  
+  draws_hs <- shrink_hs$draws$beta
+  pmse_hs <- sapply(draws_hs, pmse_fun, dir = dir, testX = xtest, testY = ytest)
+  out[[k]][3, 1] <- "App. horseshoe"
+  out[[k]][3, 2] <- mean(pmse_hs)
+
+  colnames(out[[k]]) <- c("Method", "PMSE")
+}
+
+save(out, file ="./results/CV_PMSE_mediation.RData")
+
+load("./results/CV_PMSE_mediation.RData")
+pmse <- do.call(rbind.data.frame, out)
+
+png(file = "./results/CV_PMSE_mediation.png", width = 1000, height = 800)
+ggplot(pmse, aes(x = Method, y = PMSE)) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme_bw(base_size = 25)
+dev.off()
 

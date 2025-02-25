@@ -394,6 +394,11 @@ ggplot(res, aes(x = `Mode`)) +
   theme_bw(base_size = 25) + ylab("")
 dev.off()
 
+# check modes within 0.1 of 0
+res %>%
+  group_by(Prior, Algorithm) %>%
+  summarize(sum(`Mode` > -0.1 & `Mode` < 0.1))
+
 ##### Additional cross-validation on the full data and half of the data -----
 ## Note: 25% of the data is not possible because then ML estimates are no longer available
 
@@ -728,6 +733,8 @@ for(k in 1:K){
 
 save(out, file ="./results/CV_PMSE_crime_half.RData")
 
+load("./results/CV_PMSE_crime_half.RData")
+
 pmse <- do.call(rbind.data.frame, out)
 pmse$Method <- plyr::revalue(pmse$Method, 
                              c("hs_exact" = "Exact horseshoe",
@@ -738,8 +745,19 @@ pmse$Method <- plyr::revalue(pmse$Method,
                                "ridge_shrinkem" = "App. ridge",
                                "lm" = "Unregularized"))
 
-png(file = "./results/CV_PMSE_crime_half.png", width = 1000, height = 800)
-ggplot(pmse, aes(x = Method, y = PMSE)) +
+sel <- pmse[which(pmse$Method != "Unregularized"), ]
+
+png(file = "./results/CV_PMSE_crime_half_reg.png", width = 1000, height = 800)
+ggplot(sel, aes(x = Method, y = PMSE)) +
+  geom_boxplot() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme_bw(base_size = 25)
+dev.off()
+
+sel <- pmse[which(pmse$Method == "Unregularized"), ]
+
+png(file = "./results/CV_PMSE_crime_half_unreg.png", width = 1000, height = 800)
+ggplot(sel, aes(x = Method, y = PMSE)) +
   geom_boxplot() +
   scale_x_discrete(guide = guide_axis(angle = 90)) +
   theme_bw(base_size = 25)

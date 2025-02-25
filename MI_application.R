@@ -355,6 +355,11 @@ ggplot(plotdat, aes(x = `mode`)) +
   theme_bw(base_size = 25) + ylab("") + xlab("Mode")
 dev.off()
 
+# check modes within 0.1 of 0
+plotdat %>%
+  group_by(prior) %>%
+  summarize(sum(`mode` > -0.1 & `mode` < 0.1))
+
 ##### Additional cross-validation on the full, half and 25% of the data -----
 
 ## Use 10-fold CV to compute the PMSE and visualize with a boxplot
