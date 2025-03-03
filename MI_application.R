@@ -343,6 +343,10 @@ shrinkem <- res[which(res$package == "shrinkem"), ]
 
 plotdat <- rbind.data.frame(mle, shrinkem)
 
+# select only the regularized paths
+sel <- grep("~age", plotdat$par)
+plotdat <- plotdat[sel, ]
+
 plotdat$prior <- plyr::revalue(plotdat$prior, 
                            c("unregularized" = "Unregularized",
                              "ridge" = "Ridge",
